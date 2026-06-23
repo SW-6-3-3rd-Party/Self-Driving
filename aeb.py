@@ -30,9 +30,12 @@ SAFETY:
 
 import csv
 import math
+import os
 import signal
+import sys
+import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
@@ -54,24 +57,28 @@ LEFT_DIAGONAL_NAME = "LEFT_DIAGONAL"
 RIGHT_DIAGONAL_NAME = "RIGHT_DIAGONAL"
 
 CAMERA_INDEX = 0
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-SHOW_PREVIEW = True
+FRAME_WIDTH = 320
+FRAME_HEIGHT = 240
+SHOW_PREVIEW = False
+AUTO_DISABLE_PREVIEW_WITHOUT_DISPLAY = True
 
 # If distance estimation is inaccurate, tune these first.
 CAMERA_HFOV_DEG = 62.0
 CAMERA_VFOV_DEG = 48.0
 
 USE_YOLO = True
-YOLO_MODEL_PATH = "yolov8n.pt"
-YOLO_CONF = 0.45
-YOLO_IMGSZ = 320
-YOLO_EVERY_N_FRAMES = 1  # Raise to 2 or 3 if Raspberry Pi 4 is too slow.
+YOLO_MODEL_PATH = "yolov5nu.pt"
+YOLO_CONF = 0.40
+YOLO_IMGSZ = 128
+YOLO_EVERY_N_FRAMES = 10
+YOLO_MAX_DET = 3
+YOLO_TARGET_CLASS_IDS = [0]  # fastest: person only. Use [0, 1, 2, 3, 5, 7] for person + vehicles.
 
 # Ego vehicle inputs. Replace get_ego_speed_mps() and get_steering_angle_deg()
 # if you have encoder / CAN / servo command signals.
-DEFAULT_EGO_SPEED_MPS = 0.7
+DEFAULT_EGO_SPEED_MPS = 0.0
 DEFAULT_STEERING_ANGLE_DEG = 0.0
+EGO_MOVING_MIN_SPEED_MPS = 0.10
 
 # RC car / test bench geometry.
 VEHICLE_WIDTH_M = 0.32
@@ -87,9 +94,9 @@ MAX_AEB_RANGE_M = 6.0
 # Ultrasonic settings.
 ULTRA_MIN_CM = 3
 ULTRA_MAX_CM = 500
-ULTRA_MEDIAN_SIZE = 5
-ULTRA_TIMEOUT_SEC = 0.030
-ULTRA_CROSSTALK_DELAY_SEC = 0.015
+ULTRA_MEDIAN_SIZE = 3
+ULTRA_TIMEOUT_SEC = 0.015
+ULTRA_CROSSTALK_DELAY_SEC = 0.005
 ULTRA_FUSION_MAX_M = 3.5
 ULTRA_DIAGONAL_ANGLE_DEG = 35.0
 ULTRA_STALE_SEC = 0.50
@@ -97,14 +104,38 @@ DIAGONAL_FCW_DISTANCE_M = 0.85
 DIAGONAL_PARTIAL_BRAKE_DISTANCE_M = 0.55
 DIAGONAL_FULL_BRAKE_DISTANCE_M = 0.35
 
-# Front ToF settings. Default target is a common VL53L0X module; set
-# TOF_SENSOR_MODEL to "VL53L1X" if your hardware uses that driver.
+# Front ToF settings.
+# I2C mode uses Raspberry Pi GPIO2/GPIO3:
+#   ToF SOA/SDA -> Pi GPIO2 SDA1
+#   ToF SCL     -> Pi GPIO3 SCL1
+# GPIO1 and XSHUT are optional and unused by this code.
 USE_TOF = True
+TOF_INTERFACE = "I2C"  # "I2C", "UART", or "CAN"
+TOF_CAN_CHANNEL = "can0"
+TOF_CAN_BITRATE = 500000
+TOF_CAN_ID = None  # Set to sensor arbitration ID after checking raw frames.
+TOF_CAN_TIMEOUT_SEC = 0.003
+TOF_CAN_DISTANCE_OFFSET = 0
+TOF_CAN_DISTANCE_LENGTH = 2
+TOF_CAN_DISTANCE_ENDIAN = "little"  # "little" or "big"
+TOF_CAN_DISTANCE_SCALE_MM = 1.0
+TOF_CAN_DEBUG_FRAMES = True
+TOF_UART_PORT = "/dev/serial0"
+TOF_UART_PORT_CANDIDATES = ["/dev/serial0", "/dev/ttyAMA0", "/dev/ttyS0", "/dev/ttyUSB0", "/dev/ttyACM0"]
+TOF_UART_BAUD = 115200
+TOF_UART_AUTO_DETECT_BAUD = True
+TOF_UART_BAUD_CANDIDATES = [115200, 921600, 460800, 230400, 57600, 38400, 9600]
+TOF_UART_AUTODETECT_SEC = 0.20
+TOF_UART_TIMEOUT_SEC = 0.005
+TOF_UART_PROTOCOL = "AUTO"  # "AUTO", "NOOPLOOP", "BENWAKE", or "ASCII"
+TOF_UART_DEBUG_BYTES = True
 TOF_SENSOR_MODEL = "AUTO"  # "AUTO", "VL53L0X", or "VL53L1X"
 TOF_I2C_ADDRESS = 0x29
+TOF_I2C_DEBUG_SCAN = True
+TOF_DISTANCE_SCALE = 0.5
 TOF_MIN_M = 0.03
 TOF_MAX_M = 4.00
-TOF_MEDIAN_SIZE = 7
+TOF_MEDIAN_SIZE = 3
 TOF_FUSION_MAX_M = 4.00
 TOF_STALE_SEC = 0.40
 TOF_CENTER_GATE_RATIO = 0.36
@@ -142,13 +173,22 @@ CUTIN_PARTIAL_TIME_GAP_SEC = 0.65
 CUTIN_FULL_TIME_GAP_SEC = 0.40
 
 CLEAR_CONFIRM_COUNT = 5
-LOOP_HZ = 10
+LOOP_HZ = 25
+PRINT_SENSOR_VALUES = True
+# Terminal dashboard refresh. 0.05 sec = up to 20Hz terminal update.
+# If the terminal itself becomes too heavy, raise to 0.08~0.10.
+SENSOR_PRINT_INTERVAL_SEC = 0.05
+PRETTY_TERMINAL_OUTPUT = True
+TERMINAL_CLEAR_EACH_PRINT = True
+TERMINAL_FORCE_FLUSH = True
+AEB_EVENT_PRINT_INTERVAL_SEC = 1.0
 
 # CAN output option.
 USE_CAN = False
 CAN_CHANNEL = "can0"
 CAN_ID_AEB_BRAKE_REQUEST = 0x310
 
+ENABLE_CSV_LOG = False
 LOG_CSV_PATH = "advanced_aeb_log.csv"
 
 # ============================================================
@@ -165,6 +205,11 @@ except Exception as e:
 try:
     import cv2
     CV2_AVAILABLE = True
+    try:
+        # Keep OpenCV from spawning extra CPU threads on Raspberry Pi.
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
 except Exception as e:
     CV2_AVAILABLE = False
     print("[WARN] OpenCV import failed:", e)
@@ -182,27 +227,51 @@ try:
 except Exception:
     PICAMERA2_AVAILABLE = False
 
-try:
-    import board
-    import busio
-    I2C_AVAILABLE = True
-except Exception as e:
+if USE_TOF and TOF_INTERFACE.upper() == "UART":
+    try:
+        import serial
+        SERIAL_AVAILABLE = True
+    except Exception as e:
+        SERIAL_AVAILABLE = False
+        print("[WARN] pyserial import failed:", e)
+else:
+    SERIAL_AVAILABLE = False
+
+if USE_TOF and TOF_INTERFACE.upper() == "I2C":
+    try:
+        import board
+        import busio
+        I2C_AVAILABLE = True
+        I2C_IMPORT_ERROR = ""
+    except Exception as e:
+        I2C_AVAILABLE = False
+        I2C_IMPORT_ERROR = f"board/busio import failed: {e}"
+        print("[WARN] board/busio import failed:", e)
+
+    try:
+        import adafruit_vl53l0x
+        VL53L0X_AVAILABLE = True
+        VL53L0X_IMPORT_ERROR = ""
+    except Exception as e:
+        VL53L0X_AVAILABLE = False
+        VL53L0X_IMPORT_ERROR = f"adafruit_vl53l0x import failed: {e}"
+        print("[WARN] adafruit_vl53l0x import failed:", e)
+
+    try:
+        import adafruit_vl53l1x
+        VL53L1X_AVAILABLE = True
+        VL53L1X_IMPORT_ERROR = ""
+    except Exception as e:
+        VL53L1X_AVAILABLE = False
+        VL53L1X_IMPORT_ERROR = f"adafruit_vl53l1x import failed: {e}"
+        print("[WARN] adafruit_vl53l1x import failed:", e)
+else:
     I2C_AVAILABLE = False
-    print("[WARN] board/busio import failed:", e)
-
-try:
-    import adafruit_vl53l0x
-    VL53L0X_AVAILABLE = True
-except Exception as e:
     VL53L0X_AVAILABLE = False
-    print("[WARN] adafruit_vl53l0x import failed:", e)
-
-try:
-    import adafruit_vl53l1x
-    VL53L1X_AVAILABLE = True
-except Exception as e:
     VL53L1X_AVAILABLE = False
-    print("[WARN] adafruit_vl53l1x import failed:", e)
+    I2C_IMPORT_ERROR = ""
+    VL53L0X_IMPORT_ERROR = ""
+    VL53L1X_IMPORT_ERROR = ""
 
 try:
     import can
@@ -262,6 +331,7 @@ class ToFReading:
     ttc_sec: float
     valid: bool
     confidence: float
+    sensor_ok: bool
     timestamp: float
 
 
@@ -346,6 +416,34 @@ def fmt(value, digits=2):
             return "INF"
         return f"{value:.{digits}f}"
     return str(value)
+
+
+def fmt_cell(value, unit="", digits=2, width=8):
+    if value is None:
+        text = "--"
+    elif isinstance(value, float):
+        if value > 900:
+            text = "INF"
+        elif digits == 0:
+            text = f"{value:.0f}"
+        else:
+            text = f"{value:.{digits}f}"
+    else:
+        text = str(value)
+
+    if unit and text not in {"--", "INF"}:
+        text = f"{text}{unit}"
+    return text.rjust(width)
+
+
+def preview_display_available():
+    if not SHOW_PREVIEW:
+        return False
+    if not AUTO_DISABLE_PREVIEW_WITHOUT_DISPLAY:
+        return True
+    if os.name != "posix":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def calc_crc_xor(data):
@@ -591,22 +689,149 @@ class ToFSensor:
         self.sensor = None
         self.sensor_model = None
         self.i2c = None
+        self.serial_port = None
+        self.can_bus = None
+        self.last_can_frame_text = "--"
+        self.last_uart_rx_text = "--"
+        self.last_uart_parse_text = "--"
+        self.last_uart_port_text = "--"
+        self.last_i2c_scan_text = "--"
+        self.last_i2c_error_text = "--"
+        self.uart_buffer = bytearray()
+        self.interface = TOF_INTERFACE.upper()
 
         if not USE_TOF:
             print("[INFO] Front ToF disabled by config.")
             return
 
+        if self.interface == "CAN":
+            self._init_can()
+            return
+
+        if self.interface == "UART":
+            self._init_uart()
+            return
+
+        if self.interface != "I2C":
+            print(f"[WARN] Unsupported ToF interface: {TOF_INTERFACE}")
+            return
+
+        self._init_i2c()
+
+    def _init_can(self):
+        if not CAN_AVAILABLE:
+            print("[WARN] python-can unavailable. Front CAN ToF disabled.")
+            return
+
+        try:
+            self.can_bus = can.interface.Bus(
+                channel=TOF_CAN_CHANNEL,
+                interface="socketcan",
+                bitrate=TOF_CAN_BITRATE,
+            )
+            self.sensor_model = "CAN"
+            print(f"[INFO] Front ToF loaded: CAN {TOF_CAN_CHANNEL} @ {TOF_CAN_BITRATE}")
+        except Exception as e:
+            print("[WARN] CAN ToF init failed:", e)
+            self.can_bus = None
+
+    def _init_uart(self):
+        if not SERIAL_AVAILABLE:
+            print("[WARN] pyserial unavailable. Front UART ToF disabled.")
+            return
+
+        baud_candidates = [TOF_UART_BAUD]
+        if TOF_UART_AUTO_DETECT_BAUD:
+            baud_candidates = []
+            for baud in [TOF_UART_BAUD] + TOF_UART_BAUD_CANDIDATES:
+                if baud not in baud_candidates:
+                    baud_candidates.append(baud)
+
+        port_candidates = []
+        for port in [TOF_UART_PORT] + TOF_UART_PORT_CANDIDATES:
+            if port not in port_candidates:
+                port_candidates.append(port)
+
+        last_error = None
+        opened_without_bytes = []
+
+        for port in port_candidates:
+            for baud in baud_candidates:
+                try:
+                    candidate = serial.Serial(
+                        port=port,
+                        baudrate=baud,
+                        timeout=TOF_UART_TIMEOUT_SEC,
+                    )
+                    candidate.reset_input_buffer()
+
+                    if not TOF_UART_AUTO_DETECT_BAUD:
+                        self.serial_port = candidate
+                        self.sensor_model = "UART"
+                        self.last_uart_port_text = f"{port} @ {baud}"
+                        print(f"[INFO] Front ToF loaded: UART {self.last_uart_port_text}")
+                        return
+
+                    deadline = time.perf_counter() + TOF_UART_AUTODETECT_SEC
+                    detected = bytearray()
+                    while time.perf_counter() < deadline:
+                        waiting = candidate.in_waiting
+                        chunk = candidate.read(min(waiting, 64) if waiting else 16)
+                        if chunk:
+                            detected.extend(chunk)
+                            break
+
+                    if detected:
+                        self.serial_port = candidate
+                        self.sensor_model = "UART"
+                        self.last_uart_port_text = f"{port} @ {baud}"
+                        self.last_uart_rx_text = " ".join(f"{b:02X}" for b in detected[-32:])
+                        print(f"[INFO] Front ToF loaded: UART {self.last_uart_port_text}")
+                        print(f"[INFO] Front ToF first bytes: {self.last_uart_rx_text}")
+                        return
+
+                    candidate.close()
+                    opened_without_bytes.append(f"{port}@{baud}")
+                except Exception as e:
+                    last_error = e
+
+        if TOF_UART_AUTO_DETECT_BAUD:
+            print(
+                "[WARN] UART ToF received no bytes on scanned ports/baudrates: "
+                + ", ".join(opened_without_bytes[:12])
+                + (" ..." if len(opened_without_bytes) > 12 else "")
+            )
+            if last_error is not None:
+                print("[WARN] Last UART ToF init error:", last_error)
+
+        try:
+            self.serial_port = serial.Serial(
+                port=TOF_UART_PORT,
+                baudrate=TOF_UART_BAUD,
+                timeout=TOF_UART_TIMEOUT_SEC,
+            )
+            self.sensor_model = "UART"
+            self.last_uart_port_text = f"{TOF_UART_PORT} @ {TOF_UART_BAUD}"
+            print(f"[INFO] Front ToF loaded: UART {self.last_uart_port_text}")
+        except Exception as e:
+            print("[WARN] UART ToF init failed:", e)
+            self.serial_port = None
+
+    def _init_i2c(self):
         if not I2C_AVAILABLE:
+            self.last_i2c_error_text = I2C_IMPORT_ERROR or "I2C unavailable"
             print("[WARN] I2C unavailable. Front ToF disabled.")
             return
 
         try:
             self.i2c = busio.I2C(board.SCL, board.SDA)
         except Exception as e:
+            self.last_i2c_error_text = f"I2C init failed: {e}"
             print("[WARN] I2C init failed. Front ToF disabled:", e)
             self.i2c = None
             return
 
+        self._scan_i2c_bus()
         requested = TOF_SENSOR_MODEL.upper()
 
         if requested in {"AUTO", "VL53L0X"} and VL53L0X_AVAILABLE:
@@ -616,6 +841,7 @@ class ToFSensor:
                 print("[INFO] Front ToF loaded: VL53L0X")
                 return
             except Exception as e:
+                self.last_i2c_error_text = f"VL53L0X init failed: {e}"
                 print("[WARN] VL53L0X init failed:", e)
 
         if requested in {"AUTO", "VL53L1X"} and VL53L1X_AVAILABLE:
@@ -631,11 +857,53 @@ class ToFSensor:
                 print("[INFO] Front ToF loaded: VL53L1X")
                 return
             except Exception as e:
+                self.last_i2c_error_text = f"VL53L1X init failed: {e}"
                 print("[WARN] VL53L1X init failed:", e)
 
+        if not VL53L0X_AVAILABLE and not VL53L1X_AVAILABLE:
+            self.last_i2c_error_text = " | ".join(
+                msg for msg in [VL53L0X_IMPORT_ERROR, VL53L1X_IMPORT_ERROR] if msg
+            ) or "VL53L0X/VL53L1X libraries unavailable"
         print("[WARN] No supported front ToF driver available.")
 
+    def _scan_i2c_bus(self):
+        if self.i2c is None:
+            self.last_i2c_scan_text = "--"
+            return
+
+        locked = False
+        try:
+            deadline = time.perf_counter() + 1.0
+            while not self.i2c.try_lock():
+                if time.perf_counter() > deadline:
+                    self.last_i2c_scan_text = "lock timeout"
+                    return
+                time.sleep(0.01)
+            locked = True
+            addresses = self.i2c.scan()
+            if addresses:
+                self.last_i2c_scan_text = " ".join(f"0x{addr:02X}" for addr in addresses)
+            else:
+                self.last_i2c_scan_text = "none"
+            print(f"[INFO] I2C scan: {self.last_i2c_scan_text}")
+        except Exception as e:
+            self.last_i2c_scan_text = f"scan failed: {e}"
+            self.last_i2c_error_text = self.last_i2c_scan_text
+            print("[WARN] I2C scan failed:", e)
+        finally:
+            if locked:
+                try:
+                    self.i2c.unlock()
+                except Exception:
+                    pass
+
     def read_raw_mm(self):
+        if self.sensor_model == "CAN":
+            return self._read_can_mm()
+
+        if self.sensor_model == "UART":
+            return self._read_uart_mm()
+
         if self.sensor is None:
             return None
 
@@ -658,19 +926,208 @@ class ToFSensor:
             else:
                 return None
         except Exception as e:
+            self.last_i2c_error_text = f"{self.sensor_model} read failed: {e}"
             print("[WARN] Front ToF read failed:", e)
             return None
 
         distance_m = mm / 1000.0
         if distance_m < TOF_MIN_M or distance_m > TOF_MAX_M:
+            self.last_i2c_error_text = f"{self.sensor_model} no valid target: {distance_m:.2f}m"
             return None
+        self.last_i2c_error_text = f"{self.sensor_model} OK"
         return mm
+
+    def _read_can_mm(self):
+        if self.can_bus is None:
+            return None
+
+        for _ in range(8):
+            try:
+                msg = self.can_bus.recv(timeout=TOF_CAN_TIMEOUT_SEC)
+            except Exception as e:
+                print("[WARN] CAN ToF read failed:", e)
+                return None
+
+            if msg is None:
+                return None
+
+            data = bytes(msg.data)
+            self.last_can_frame_text = (
+                f"id=0x{msg.arbitration_id:X} "
+                f"dlc={msg.dlc} "
+                f"data={' '.join(f'{b:02X}' for b in data)}"
+            )
+
+            if TOF_CAN_ID is not None and msg.arbitration_id != TOF_CAN_ID:
+                continue
+
+            start = TOF_CAN_DISTANCE_OFFSET
+            end = start + TOF_CAN_DISTANCE_LENGTH
+            if len(data) < end:
+                continue
+
+            raw = int.from_bytes(data[start:end], byteorder=TOF_CAN_DISTANCE_ENDIAN, signed=False)
+            mm = float(raw) * TOF_CAN_DISTANCE_SCALE_MM
+            distance_m = mm / 1000.0
+
+            if TOF_MIN_M <= distance_m <= TOF_MAX_M:
+                return mm
+
+        return None
+
+    def _read_uart_mm(self):
+        if self.serial_port is None:
+            return None
+
+        try:
+            waiting = self.serial_port.in_waiting
+            if waiting:
+                chunk = self.serial_port.read(min(waiting, 64))
+            else:
+                chunk = self.serial_port.read(16)
+        except Exception as e:
+            print("[WARN] UART ToF read failed:", e)
+            return None
+
+        if chunk:
+            self.uart_buffer.extend(chunk)
+            shown = bytes(self.uart_buffer[-32:])
+            self.last_uart_rx_text = " ".join(f"{b:02X}" for b in shown)
+
+        protocol = TOF_UART_PROTOCOL.upper()
+        mm = None
+
+        if protocol in {"AUTO", "NOOPLOOP"}:
+            mm = self._parse_nooploop_uart_mm()
+
+        if mm is None and protocol in {"AUTO", "BENWAKE"}:
+            mm = self._parse_benewake_uart_mm()
+
+        if mm is None and protocol in {"AUTO", "ASCII"}:
+            mm = self._parse_ascii_uart_mm()
+
+        if len(self.uart_buffer) > 128:
+            del self.uart_buffer[:-32]
+
+        if mm is None:
+            if self.uart_buffer:
+                self.last_uart_parse_text = f"buffer={len(self.uart_buffer)}B, no valid distance frame"
+            return None
+
+        distance_m = mm / 1000.0
+        if distance_m < TOF_MIN_M or distance_m > TOF_MAX_M:
+            self.last_uart_parse_text = f"parsed {mm:.0f}mm out of range"
+            return None
+        self.last_uart_parse_text = f"distance={mm:.0f}mm"
+        return mm
+
+    def _parse_nooploop_uart_mm(self):
+        # Nooploop TOFSense products use binary frames headed by 0x57 on many
+        # firmwares. Distance is commonly a little-endian float in meters.
+        frame_lengths = (16, 15, 17, 18)
+
+        while len(self.uart_buffer) >= min(frame_lengths):
+            if self.uart_buffer[0] != 0x57:
+                del self.uart_buffer[0]
+                continue
+
+            for frame_len in frame_lengths:
+                if len(self.uart_buffer) < frame_len:
+                    continue
+
+                frame = bytes(self.uart_buffer[:frame_len])
+                checksum = sum(frame[:-1]) & 0xFF
+                checksum_ok = checksum == frame[-1]
+
+                for offset in range(3, min(frame_len - 4, 10)):
+                    value = self._bytes_to_float_le(frame[offset:offset + 4])
+                    if value is None:
+                        continue
+                    if TOF_MIN_M <= value <= TOF_MAX_M:
+                        # Trust a valid checksum when present. If firmware uses a
+                        # different length/checksum, still accept plausible 0x57 frames.
+                        del self.uart_buffer[:frame_len]
+                        self.last_uart_parse_text = (
+                            f"nooploop offset={offset}, checksum={'OK' if checksum_ok else 'unchecked'}"
+                        )
+                        return value * 1000.0
+
+            if len(self.uart_buffer) > max(frame_lengths):
+                del self.uart_buffer[0]
+            else:
+                return None
+
+        return None
+
+    def _bytes_to_float_le(self, data):
+        if len(data) != 4:
+            return None
+        try:
+            import struct
+            value = struct.unpack("<f", data)[0]
+        except Exception:
+            return None
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+
+    def _parse_benewake_uart_mm(self):
+        while len(self.uart_buffer) >= 9:
+            if self.uart_buffer[0] != 0x59 or self.uart_buffer[1] != 0x59:
+                del self.uart_buffer[0]
+                continue
+
+            frame = self.uart_buffer[:9]
+            checksum = sum(frame[:8]) & 0xFF
+            if checksum != frame[8]:
+                del self.uart_buffer[0]
+                continue
+
+            distance_cm = frame[2] | (frame[3] << 8)
+            del self.uart_buffer[:9]
+            return float(distance_cm) * 10.0
+
+        return None
+
+    def _parse_ascii_uart_mm(self):
+        for newline in (10, 13):
+            if newline in self.uart_buffer:
+                idx = self.uart_buffer.index(newline)
+                raw_line = bytes(self.uart_buffer[:idx]).decode("ascii", errors="ignore").strip()
+                del self.uart_buffer[:idx + 1]
+
+                token = ""
+                for ch in raw_line:
+                    if ch.isdigit() or ch == ".":
+                        token += ch
+                    elif token:
+                        break
+
+                if not token:
+                    return None
+
+                value = float(token)
+                # Treat small decimal values as meters, medium values as cm,
+                # and large values as mm so common UART ToF text formats work.
+                if value <= 10.0:
+                    return value * 1000.0
+                if value <= 500.0:
+                    return value * 10.0
+                return value
+
+        return None
 
     def update(self):
         now = time.perf_counter()
+        sensor_ok = (
+            self.sensor is not None
+            or self.serial_port is not None
+            or self.can_bus is not None
+        )
         raw_mm = self.read_raw_mm()
 
         if raw_mm is not None:
+            raw_mm *= TOF_DISTANCE_SCALE
             self.values.append(raw_mm)
             self.last_valid_time = now
 
@@ -684,6 +1141,7 @@ class ToFSensor:
                 ttc_sec=999.0,
                 valid=False,
                 confidence=0.0,
+                sensor_ok=sensor_ok,
                 timestamp=now,
             )
 
@@ -715,10 +1173,23 @@ class ToFSensor:
             ttc_sec=ttc,
             valid=is_fresh,
             confidence=distance_confidence(distance_m, TOF_MIN_M, TOF_MAX_M) if is_fresh else 0.0,
+            sensor_ok=sensor_ok,
             timestamp=now,
         )
 
     def release(self):
+        if self.can_bus is not None:
+            try:
+                self.can_bus.shutdown()
+            except Exception:
+                pass
+
+        if self.serial_port is not None:
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+
         if self.sensor_model == "VL53L1X" and self.sensor is not None:
             try:
                 self.sensor.stop_ranging()
@@ -758,6 +1229,11 @@ class CameraManager:
 
         try:
             self.cap = cv2.VideoCapture(CAMERA_INDEX)
+            try:
+                # Avoid old camera frames piling up and causing apparent latency.
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
             self.cap.set(cv2.CAP_PROP_FPS, 30)
@@ -771,18 +1247,26 @@ class CameraManager:
             print("[WARN] Camera init failed:", e)
             self.cap = None
 
+    def _normalize_frame(self, frame):
+        if frame is None or not CV2_AVAILABLE:
+            return frame
+        h, w = frame.shape[:2]
+        if w == FRAME_WIDTH and h == FRAME_HEIGHT:
+            return frame
+        return cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_AREA)
+
     def read(self):
         if not CV2_AVAILABLE:
             return None
 
         if self.use_picamera2 and self.picam2 is not None:
             frame = self.picam2.capture_array()
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            return self._normalize_frame(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
         if self.cap is not None:
             ret, frame = self.cap.read()
             if ret:
-                return frame
+                return self._normalize_frame(frame)
         return None
 
     def release(self):
@@ -799,21 +1283,8 @@ class ObjectDetector:
     def __init__(self):
         self.model = None
         self.enabled = False
-        self.target_labels = {
-            "person",
-            "bicycle",
-            "car",
-            "motorcycle",
-            "bus",
-            "truck",
-            "dog",
-            "cat",
-            "chair",
-            "bench",
-            "backpack",
-            "suitcase",
-            "sports ball",
-        }
+        # Fast mode: only detect people.
+        self.target_labels = {"person"}
 
         if USE_YOLO and YOLO_AVAILABLE:
             try:
@@ -833,6 +1304,11 @@ class ObjectDetector:
             source=frame,
             imgsz=YOLO_IMGSZ,
             conf=YOLO_CONF,
+            classes=YOLO_TARGET_CLASS_IDS,
+            max_det=YOLO_MAX_DET,
+            device="cpu",
+            half=False,
+            augment=False,
             verbose=False,
         )
 
@@ -876,6 +1352,97 @@ class ObjectDetector:
                 )
             )
         return detections
+
+
+class AsyncYOLOWorker:
+    """
+    Runs YOLO outside the real-time AEB loop.
+
+    The safety loop must never wait for neural-network inference. This worker
+    keeps only the newest frame, drops backlog, and exposes the latest finished
+    detections to the main loop. If YOLO is slow, ToF/ultrasonic based braking
+    still runs at LOOP_HZ.
+    """
+
+    def __init__(self, detector):
+        self.detector = detector
+        self.enabled = detector is not None and detector.enabled
+
+        self.frame_lock = threading.Lock()
+        self.result_lock = threading.Lock()
+
+        self.latest_frame = None
+        self.latest_frame_seq = 0
+
+        self.latest_detections = []
+        self.latest_result_seq = -1
+        self.latest_result_time = 0.0
+
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        if not self.enabled:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self.thread.start()
+        print("[INFO] Async YOLO worker started")
+
+    def submit_frame(self, frame):
+        if not self.enabled or frame is None:
+            return
+
+        # No queue: keep only the newest frame to avoid inference backlog.
+        with self.frame_lock:
+            self.latest_frame = frame.copy()
+            self.latest_frame_seq += 1
+
+    def get_result(self):
+        if not self.enabled:
+            return -1, [], 0.0
+        with self.result_lock:
+            return (
+                self.latest_result_seq,
+                list(self.latest_detections),
+                self.latest_result_time,
+            )
+
+    def _worker_loop(self):
+        last_processed_seq = -1
+
+        while self.running:
+            frame = None
+            seq = -1
+
+            with self.frame_lock:
+                if self.latest_frame is not None and self.latest_frame_seq != last_processed_seq:
+                    frame = self.latest_frame
+                    seq = self.latest_frame_seq
+
+            if frame is None:
+                time.sleep(0.005)
+                continue
+
+            try:
+                detections = self.detector.detect(frame)
+            except Exception as e:
+                print("[WARN] Async YOLO detect failed:", e)
+                detections = []
+
+            now = time.perf_counter()
+            with self.result_lock:
+                self.latest_detections = detections
+                self.latest_result_seq = seq
+                self.latest_result_time = now
+
+            last_processed_seq = seq
+
+    def stop(self):
+        self.running = False
+        if self.thread is not None:
+            self.thread.join(timeout=1.0)
+
 
 # ============================================================
 # Kinematics Estimation
@@ -1147,6 +1714,22 @@ class AdvancedThreatAssessment:
             return 999.0
         return distance_m / closing_speed_mps
 
+    def ego_is_moving(self, v_ego):
+        return v_ego > EGO_MOVING_MIN_SPEED_MPS
+
+    def controllable_closing_speed(self, measured_closing_mps, v_ego, fallback_speed_mps=0.0):
+        if not self.ego_is_moving(v_ego):
+            return 0.0
+
+        # AEB braking can only reduce the ego vehicle's contribution to closing.
+        # If an outside object moves toward a stopped car, measured closing exists
+        # but ego-controllable closing is zero.
+        measured_closing_mps = max(0.0, measured_closing_mps)
+        fallback_speed_mps = max(0.0, fallback_speed_mps)
+        ego_contribution = min(measured_closing_mps, v_ego)
+        fallback_contribution = min(fallback_speed_mps, v_ego)
+        return max(ego_contribution, fallback_contribution)
+
     def time_to_path_entry(self, obj, steering_angle_deg):
         center = path_center_x_at_z(obj.z_m, steering_angle_deg)
         rel_x = obj.x_m - center
@@ -1175,13 +1758,14 @@ class AdvancedThreatAssessment:
         closing_from_camera = max(0.0, -obj.vz_mps)
         closing_from_tof = max(0.0, obj.tof_approach_speed_mps)
         closing_from_ultra = max(0.0, obj.ultra_approach_speed_mps)
-        closing = max(closing_from_camera, closing_from_tof, closing_from_ultra)
+        measured_closing = max(closing_from_camera, closing_from_tof, closing_from_ultra)
 
         # Fallback for near in-path object when velocity estimate is unstable.
-        if obj.in_path_now and obj.z_m < 2.0 and v_ego > 0.15 and closing < 0.05:
-            closing = v_ego * 0.75
+        fallback = 0.0
+        if obj.in_path_now and obj.z_m < 2.0 and measured_closing < 0.05:
+            fallback = v_ego * 0.75
 
-        return closing
+        return self.controllable_closing_speed(measured_closing, v_ego, fallback)
 
     def classify_scenario(self, obj, steering_angle_deg):
         t_path = self.time_to_path_entry(obj, steering_angle_deg)
@@ -1208,6 +1792,7 @@ class AdvancedThreatAssessment:
         ttc = self.ttc_longitudinal(distance_m, closing)
         req_decel = self.required_decel(distance_m, closing)
         stop_dist = self.stopping_distance(v_ego)
+        ego_moving = self.ego_is_moving(v_ego)
 
         t_path = self.time_to_path_entry(obj, steering_angle_deg)
         t_ego = self.ego_time_to_conflict_z(obj, v_ego)
@@ -1215,7 +1800,7 @@ class AdvancedThreatAssessment:
 
         p = 0.0
 
-        if obj.in_path_now:
+        if obj.in_path_now and ego_moving:
             if ttc < FCW_TTC_SEC:
                 p += 0.20
             if ttc < PARTIAL_TTC_SEC:
@@ -1227,7 +1812,7 @@ class AdvancedThreatAssessment:
             if stop_dist >= distance_m - self.safety_margin:
                 p += 0.25
 
-        if threat_type in {ThreatType.CROSSING_VRU, ThreatType.CUT_IN}:
+        if threat_type in {ThreatType.CROSSING_VRU, ThreatType.CUT_IN} and ego_moving:
             if t_path < CROSSING_HORIZON_SEC:
                 p += 0.20
             if t_ego < CROSSING_HORIZON_SEC:
@@ -1286,8 +1871,14 @@ class AdvancedThreatAssessment:
         brake = 0
         reason = "No critical threat"
 
+        if not ego_moving:
+            reason = (
+                f"Ego stopped: vEgo={v_ego:.2f}m/s, "
+                "no controllable AEB brake needed"
+            )
+
         # Longitudinal AEB: object is currently in predicted path.
-        if obj.in_path_now:
+        if obj.in_path_now and ego_moving:
             if ttc <= FULL_TTC_SEC or req_decel >= FULL_REQ_DECEL or stop_dist >= distance_m:
                 desired_state = AEBState.FULL_BRAKE
                 brake = 100
@@ -1312,7 +1903,7 @@ class AdvancedThreatAssessment:
                 )
 
         # Crossing pedestrian/cyclist/object.
-        if threat_type == ThreatType.CROSSING_VRU:
+        if threat_type == ThreatType.CROSSING_VRU and ego_moving:
             if t_ego < CROSSING_HORIZON_SEC and time_gap <= CROSSING_FULL_TIME_GAP_SEC:
                 desired_state = AEBState.FULL_BRAKE
                 brake = 100
@@ -1329,7 +1920,7 @@ class AdvancedThreatAssessment:
                 reason = f"Crossing VRU FCW: tEgo={t_ego:.2f}s, tPath={t_path:.2f}s, gap={time_gap:.2f}s"
 
         # Vehicle cut-in.
-        if threat_type == ThreatType.CUT_IN:
+        if threat_type == ThreatType.CUT_IN and ego_moving:
             if t_ego < CUTIN_HORIZON_SEC and time_gap <= CUTIN_FULL_TIME_GAP_SEC:
                 desired_state = AEBState.FULL_BRAKE
                 brake = 100
@@ -1364,10 +1955,12 @@ class AdvancedThreatAssessment:
 
     def assess_unknown_close(self, ultrasonic_readings, tof_reading, v_ego):
         valid_ultra = [r for r in ultrasonic_readings.values() if r.valid and r.distance_m is not None]
+        front_available = tof_reading is not None and tof_reading.sensor_ok
         front_valid = tof_reading is not None and tof_reading.valid and tof_reading.distance_m is not None
         stop_dist = self.stopping_distance(v_ego)
+        ego_moving = self.ego_is_moving(v_ego)
 
-        if not front_valid and not valid_ultra:
+        if not front_available and not valid_ultra:
             return AdvancedRisk(
                 threat_type=ThreatType.SENSOR_FAULT,
                 desired_state=AEBState.SENSOR_FAULT,
@@ -1387,7 +1980,11 @@ class AdvancedThreatAssessment:
 
         if front_valid:
             distance_m = tof_reading.distance_m
-            closing = max(tof_reading.approach_speed_mps, v_ego * 0.85)
+            closing = self.controllable_closing_speed(
+                tof_reading.approach_speed_mps,
+                v_ego,
+                v_ego * 0.85,
+            )
             ttc = self.ttc_longitudinal(distance_m, closing)
             req_decel = self.required_decel(distance_m, closing)
 
@@ -1397,10 +1994,13 @@ class AdvancedThreatAssessment:
             reason = f"Front ToF clear: {distance_m:.2f}m"
 
             if (
-                distance_m <= UNKNOWN_STOP_DISTANCE_M
-                or ttc <= FULL_TTC_SEC
-                or req_decel >= FULL_REQ_DECEL
-                or stop_dist >= distance_m
+                ego_moving
+                and (
+                    distance_m <= UNKNOWN_STOP_DISTANCE_M
+                    or ttc <= FULL_TTC_SEC
+                    or req_decel >= FULL_REQ_DECEL
+                    or stop_dist >= distance_m
+                )
             ):
                 desired = AEBState.FULL_BRAKE
                 brake = 100
@@ -1409,7 +2009,11 @@ class AdvancedThreatAssessment:
                     f"Front ToF unknown FULL: dist={distance_m:.2f}m, "
                     f"TTC={ttc:.2f}s, reqDecel={req_decel:.2f}"
                 )
-            elif ttc <= PARTIAL_TTC_SEC or req_decel >= PARTIAL_REQ_DECEL or stop_dist >= distance_m * 0.85:
+            elif ego_moving and (
+                ttc <= PARTIAL_TTC_SEC
+                or req_decel >= PARTIAL_REQ_DECEL
+                or stop_dist >= distance_m * 0.85
+            ):
                 desired = AEBState.PARTIAL_BRAKE
                 brake = 60
                 probability = 0.70
@@ -1417,7 +2021,11 @@ class AdvancedThreatAssessment:
                     f"Front ToF unknown PARTIAL: dist={distance_m:.2f}m, "
                     f"TTC={ttc:.2f}s, reqDecel={req_decel:.2f}"
                 )
-            elif ttc <= FCW_TTC_SEC or req_decel >= FCW_REQ_DECEL or stop_dist >= distance_m * 0.65:
+            elif ego_moving and (
+                ttc <= FCW_TTC_SEC
+                or req_decel >= FCW_REQ_DECEL
+                or stop_dist >= distance_m * 0.65
+            ):
                 desired = AEBState.FCW
                 brake = 0
                 probability = 0.45
@@ -1452,7 +2060,7 @@ class AdvancedThreatAssessment:
                 nearest.name,
                 nearest.approach_speed_mps,
             )
-            closing = max(ultra_closing, v_ego * 0.60)
+            closing = self.controllable_closing_speed(ultra_closing, v_ego, v_ego * 0.60)
             ttc = self.ttc_longitudinal(distance_m, closing)
             req_decel = self.required_decel(distance_m, closing)
 
@@ -1461,7 +2069,10 @@ class AdvancedThreatAssessment:
             probability = 0.0
             reason = f"Diagonal ultrasonic clear: {nearest.name} {nearest.distance_m:.2f}m"
 
-            if nearest.distance_m <= DIAGONAL_FULL_BRAKE_DISTANCE_M or ttc <= FULL_TTC_SEC:
+            if ego_moving and (
+                nearest.distance_m <= DIAGONAL_FULL_BRAKE_DISTANCE_M
+                or ttc <= FULL_TTC_SEC
+            ):
                 desired = AEBState.FULL_BRAKE
                 brake = 100
                 probability = 0.88
@@ -1469,7 +2080,10 @@ class AdvancedThreatAssessment:
                     f"Diagonal unknown FULL: {nearest.name} direct={nearest.distance_m:.2f}m, "
                     f"forward={distance_m:.2f}m, TTC={ttc:.2f}s"
                 )
-            elif nearest.distance_m <= DIAGONAL_PARTIAL_BRAKE_DISTANCE_M or ttc <= PARTIAL_TTC_SEC:
+            elif ego_moving and (
+                nearest.distance_m <= DIAGONAL_PARTIAL_BRAKE_DISTANCE_M
+                or ttc <= PARTIAL_TTC_SEC
+            ):
                 desired = AEBState.PARTIAL_BRAKE
                 brake = 60
                 probability = 0.62
@@ -1477,7 +2091,10 @@ class AdvancedThreatAssessment:
                     f"Diagonal unknown PARTIAL: {nearest.name} direct={nearest.distance_m:.2f}m, "
                     f"forward={distance_m:.2f}m, TTC={ttc:.2f}s"
                 )
-            elif nearest.distance_m <= DIAGONAL_FCW_DISTANCE_M or ttc <= FCW_TTC_SEC:
+            elif ego_moving and (
+                nearest.distance_m <= DIAGONAL_FCW_DISTANCE_M
+                or ttc <= FCW_TTC_SEC
+            ):
                 desired = AEBState.FCW
                 brake = 0
                 probability = 0.38
@@ -1504,8 +2121,18 @@ class AdvancedThreatAssessment:
                     confidence_percent=int(nearest.confidence * 100),
                 )
 
-        if not front_valid:
-            nearest_distance = nearest.forward_distance_m if nearest is not None else None
+        if not front_valid and not front_available:
+            nearest_distance = (nearest.forward_distance_m or nearest.distance_m) if nearest is not None else None
+            nearest_ttc = 999.0
+            if nearest is not None:
+                nearest_closing = self.controllable_closing_speed(
+                    ultrasonic_forward_approach_component(
+                        nearest.name,
+                        nearest.approach_speed_mps,
+                    ),
+                    v_ego,
+                )
+                nearest_ttc = self.ttc_longitudinal(nearest_distance, nearest_closing)
             return AdvancedRisk(
                 threat_type=ThreatType.SENSOR_FAULT,
                 desired_state=AEBState.DEGRADED,
@@ -1513,7 +2140,36 @@ class AdvancedThreatAssessment:
                 reason="Front ToF unavailable; running camera + diagonal ultrasonic degraded mode",
                 obj=None,
                 distance_m=nearest_distance,
-                ttc_long_sec=nearest.ttc_sec if nearest is not None else 999.0,
+                ttc_long_sec=nearest_ttc,
+                required_decel_mps2=0.0,
+                stopping_distance_m=stop_dist,
+                time_to_path_sec=999.0,
+                ego_time_to_conflict_sec=999.0,
+                time_gap_sec=999.0,
+                collision_probability=0.0,
+                confidence_percent=0,
+            )
+
+        if not front_valid:
+            nearest_distance = (nearest.forward_distance_m or nearest.distance_m) if nearest is not None else None
+            nearest_ttc = 999.0
+            if nearest is not None:
+                nearest_closing = self.controllable_closing_speed(
+                    ultrasonic_forward_approach_component(
+                        nearest.name,
+                        nearest.approach_speed_mps,
+                    ),
+                    v_ego,
+                )
+                nearest_ttc = self.ttc_longitudinal(nearest_distance, nearest_closing)
+            return AdvancedRisk(
+                threat_type=ThreatType.NONE,
+                desired_state=AEBState.MONITORING,
+                brake_percent=0,
+                reason="Front ToF has no valid target in range",
+                obj=None,
+                distance_m=nearest_distance,
+                ttc_long_sec=nearest_ttc,
                 required_decel_mps2=0.0,
                 stopping_distance_m=stop_dist,
                 time_to_path_sec=999.0,
@@ -1524,13 +2180,23 @@ class AdvancedThreatAssessment:
             )
 
         nearest_distance = tof_reading.distance_m
-        nearest_ttc = tof_reading.ttc_sec
+        nearest_closing = self.controllable_closing_speed(
+            tof_reading.approach_speed_mps,
+            v_ego,
+        )
+        nearest_ttc = self.ttc_longitudinal(nearest_distance, nearest_closing)
+        reason = "No object threat"
+        if not ego_moving:
+            reason = (
+                f"Ego stopped: vEgo={v_ego:.2f}m/s, "
+                "no controllable AEB brake needed"
+            )
 
         return AdvancedRisk(
             threat_type=ThreatType.NONE,
             desired_state=AEBState.MONITORING,
             brake_percent=0,
-            reason="No object threat",
+            reason=reason,
             obj=None,
             distance_m=nearest_distance,
             ttc_long_sec=nearest_ttc,
@@ -1660,6 +2326,7 @@ class BrakeController:
     def __init__(self):
         self.last_state = None
         self.last_brake = -1
+        self.last_event_print_time = 0.0
         self.alive_counter = 0
         self.can_bus = None
 
@@ -1675,6 +2342,7 @@ class BrakeController:
                     self.can_bus = None
 
     def apply(self, state, brake_percent, risk):
+        now = time.perf_counter()
         brake_percent = int(clamp(brake_percent, 0, 100))
 
         if not DRY_RUN:
@@ -1693,7 +2361,15 @@ class BrakeController:
             AEBState.SENSOR_FAULT,
         }
 
-        if important or brake_percent != self.last_brake or state != self.last_state:
+        changed = brake_percent != self.last_brake or state != self.last_state
+        periodic_critical = (
+            state in {AEBState.FULL_BRAKE, AEBState.STOP_HOLD}
+            and now - self.last_event_print_time >= AEB_EVENT_PRINT_INTERVAL_SEC
+        )
+        dashboard_mode = PRINT_SENSOR_VALUES and PRETTY_TERMINAL_OUTPUT
+        should_print = changed or periodic_critical
+
+        if not dashboard_mode and (important or should_print):
             print(
                 f"[AEB] {state.name:<14} "
                 f"brake={brake_percent:3d}% "
@@ -1704,6 +2380,10 @@ class BrakeController:
                 f"stopDist={fmt(risk.stopping_distance_m)}m "
                 f"reason={risk.reason}"
             )
+            self.last_event_print_time = now
+        elif dashboard_mode and periodic_critical:
+            # In dashboard mode, avoid extra asynchronous lines that corrupt the redraw.
+            self.last_event_print_time = now
 
         self.last_state = state
         self.last_brake = brake_percent
@@ -1934,8 +2614,9 @@ def draw_overlay(frame, objects, risk, ultrasonic_readings, tof_reading, state, 
     ]
 
     if tof_reading:
+        tof_cm = tof_reading.distance_m * 100.0 if tof_reading.distance_m is not None else None
         lines.append(
-            f"FRONT_TOF: {fmt(tof_reading.distance_m)}m, "
+            f"FRONT_TOF: {fmt(tof_cm, 1)}cm, "
             f"approach={tof_reading.approach_speed_mps:.2f}m/s, "
             f"TTC={fmt(tof_reading.ttc_sec)}s, valid={int(tof_reading.valid)}"
         )
@@ -1955,6 +2636,106 @@ def draw_overlay(frame, objects, risk, ultrasonic_readings, tof_reading, state, 
 
     return frame
 
+
+def print_sensor_values(
+    ultrasonic_readings,
+    tof_reading,
+    tof_sensor,
+    objects,
+    risk,
+    state,
+    brake_percent,
+    ego_speed,
+    steering_angle,
+):
+    """
+    Fast minimal terminal dashboard.
+    - Dashboard title is exactly DASHBOARD.
+    - Sensor names are Front / Left / Right and distances are shown in cm.
+    - Object detection display is person-only.
+    - Final result line shows only AEB emergency braking ON/OFF.
+    - Summary keeps only speed(km/h), steering direction, and risk distance.
+    """
+    def distance_text(cm):
+        if cm is None or not math.isfinite(cm) or cm > 9000:
+            return "--- cm"
+        return f"{cm:.0f} cm"
+
+    def steering_text(angle_deg):
+        # Tune threshold if your servo center has offset/noise.
+        if angle_deg <= -3.0:
+            return "Left"
+        if angle_deg >= 3.0:
+            return "Right"
+        return "Front"
+
+    def object_position(obj):
+        if obj.in_path_now or abs(obj.x_m) <= path_half_width():
+            return "Front"
+        if obj.x_m < 0:
+            return "Left"
+        return "Right"
+
+    def person_count_text(position_key):
+        count = sum(
+            1
+            for obj in objects
+            if obj.label == "person" and object_position(obj) == position_key
+        )
+        return f"person {count}" if count > 0 else "none"
+
+    front_cm = None
+    if tof_reading is not None and tof_reading.valid and tof_reading.filtered_mm is not None:
+        front_cm = tof_reading.filtered_mm / 10.0
+
+    left = ultrasonic_readings.get(LEFT_DIAGONAL_NAME)
+    right = ultrasonic_readings.get(RIGHT_DIAGONAL_NAME)
+    left_cm = left.filtered_cm if left is not None and left.valid else None
+    right_cm = right.filtered_cm if right is not None and right.valid else None
+
+    speed_kmh = ego_speed * 3.6
+    threat_distance_cm = risk.distance_m * 100.0 if risk.distance_m is not None else None
+    brake_on = brake_percent > 0 or state in {
+        AEBState.BRAKE_PREFILL,
+        AEBState.PARTIAL_BRAKE,
+        AEBState.FULL_BRAKE,
+        AEBState.STOP_HOLD,
+    }
+    result_text = "ON" if brake_on else "OFF"
+
+    lines = []
+    if PRETTY_TERMINAL_OUTPUT and TERMINAL_CLEAR_EACH_PRINT:
+        lines.append("\033[2J\033[H")
+
+    lines.extend([
+        "=" * 34,
+        "DASHBOARD",
+        "=" * 34,
+        f"Front : {distance_text(front_cm):>8}",
+        f"Left  : {distance_text(left_cm):>8}",
+        f"Right : {distance_text(right_cm):>8}",
+    ])
+
+
+    lines.extend([
+        "-" * 34,
+        "Detected Object",
+        f"Front : {person_count_text('Front')}",
+        f"Left  : {person_count_text('Left')}",
+        f"Right : {person_count_text('Right')}",
+        "-" * 34,
+        f"Speed         : {speed_kmh:.1f} km/h",
+        f"Steering      : {steering_text(steering_angle)}",
+        f"Risk Distance : {distance_text(threat_distance_cm)}",
+        "=" * 34,
+        f"Result        : AEB Emergency Braking {result_text}",
+        "Ctrl+C Exit",
+    ])
+
+    sys.stdout.write("\n".join(lines) + "\n")
+    if TERMINAL_FORCE_FLUSH:
+        sys.stdout.flush()
+
 # ============================================================
 # Main
 # ============================================================
@@ -1967,11 +2748,30 @@ def signal_handler(sig, frame):
     running = False
 
 
+def tof_config_summary():
+    interface = TOF_INTERFACE.upper()
+    if interface == "I2C":
+        return (
+            f"TOF_INTERFACE=I2C, TOF_SENSOR_MODEL={TOF_SENSOR_MODEL}, "
+            f"I2C_ADDR=0x{TOF_I2C_ADDRESS:02X}, TOF_SCALE={TOF_DISTANCE_SCALE}"
+        )
+    if interface == "UART":
+        return (
+            f"TOF_INTERFACE=UART, TOF_UART_PORT={TOF_UART_PORT}, "
+            f"TOF_UART_BAUD={TOF_UART_BAUD}, AUTO_BAUD={TOF_UART_AUTO_DETECT_BAUD}"
+        )
+    if interface == "CAN":
+        return f"TOF_INTERFACE=CAN, TOF_CAN_CHANNEL={TOF_CAN_CHANNEL}, TOF_CAN_BITRATE={TOF_CAN_BITRATE}"
+    return f"TOF_INTERFACE={TOF_INTERFACE}"
+
+
 def main():
     global running
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
+    preview_enabled = preview_display_available()
 
     print("============================================================")
     print(" Advanced Raspberry Pi 4 AEB")
@@ -1979,23 +2779,39 @@ def main():
     print("============================================================")
     print(f"[CONFIG] DRY_RUN={DRY_RUN}")
     print(f"[CONFIG] USE_YOLO={USE_YOLO}, YOLO_AVAILABLE={YOLO_AVAILABLE}")
-    print(f"[CONFIG] USE_TOF={USE_TOF}, TOF_SENSOR_MODEL={TOF_SENSOR_MODEL}")
+    print(
+        f"[CONFIG] CAMERA={FRAME_WIDTH}x{FRAME_HEIGHT}, "
+        f"YOLO_MODEL={YOLO_MODEL_PATH}, IMGSZ={YOLO_IMGSZ}, "
+        f"YOLO_EVERY_N_FRAMES={YOLO_EVERY_N_FRAMES}"
+    )
+    print(f"[CONFIG] USE_TOF={USE_TOF}, {tof_config_summary()}")
     print(f"[CONFIG] FOCAL_X={FOCAL_X:.1f}, FOCAL_Y={FOCAL_Y:.1f}")
     print(f"[CONFIG] AVAILABLE_DECEL={AVAILABLE_DECEL_MPS2} m/s^2")
+    print(f"[CONFIG] ENABLE_CSV_LOG={ENABLE_CSV_LOG}")
+    print(f"[CONFIG] PRINT_SENSOR_VALUES={PRINT_SENSOR_VALUES}")
+    print(f"[CONFIG] PRETTY_TERMINAL_OUTPUT={PRETTY_TERMINAL_OUTPUT}")
+    print(f"[CONFIG] SHOW_PREVIEW={SHOW_PREVIEW}, PREVIEW_ENABLED={preview_enabled}")
+    if SHOW_PREVIEW and not preview_enabled:
+        print("[WARN] Preview disabled because no DISPLAY/WAYLAND_DISPLAY was found.")
     print("============================================================")
 
     ultrasonic = UltrasonicManager()
     tof_sensor = ToFSensor()
     camera = CameraManager()
     detector = ObjectDetector()
+    async_yolo = AsyncYOLOWorker(detector)
+    async_yolo.start()
     kin_tracker = ObjectKinematicsTracker()
     threat = AdvancedThreatAssessment()
     state_machine = AEBStateMachine()
     brake_controller = BrakeController()
-    logger = CSVLogger(LOG_CSV_PATH)
+    logger = CSVLogger(LOG_CSV_PATH) if ENABLE_CSV_LOG else None
 
     frame_count = 0
     last_objects = []
+    last_yolo_result_seq = -1
+    YOLO_RESULT_STALE_SEC = 0.7
+    last_sensor_print_time = 0.0
     yolo_interval = max(1, int(YOLO_EVERY_N_FRAMES))
     loop_period = 1.0 / max(1, LOOP_HZ)
 
@@ -2012,20 +2828,27 @@ def main():
             frame = camera.read()
 
             frame_count += 1
-            objects = []
+            objects = last_objects
 
-            if frame is not None and detector.enabled:
+            # Submit frames to YOLO without blocking the AEB safety loop.
+            # If YOLO inference takes 1 second, ToF/ultrasonic AEB still runs.
+            if frame is not None and async_yolo.enabled:
                 if frame_count % yolo_interval == 0:
-                    detections = detector.detect(frame)
-                    objects = kin_tracker.update(
-                        detections=detections,
-                        ultrasonic_readings=ultrasonic_readings,
-                        tof_reading=tof_reading,
-                        steering_angle_deg=steering_angle,
-                    )
-                    last_objects = objects
-                else:
-                    objects = last_objects
+                    async_yolo.submit_frame(frame)
+
+            # Use a newly completed YOLO result only when it is fresh.
+            result_seq, detections, result_time = async_yolo.get_result()
+            result_age = time.perf_counter() - result_time if result_time > 0 else 999.0
+
+            if result_seq != last_yolo_result_seq and result_age <= YOLO_RESULT_STALE_SEC:
+                objects = kin_tracker.update(
+                    detections=detections,
+                    ultrasonic_readings=ultrasonic_readings,
+                    tof_reading=tof_reading,
+                    steering_angle_deg=steering_angle,
+                )
+                last_objects = objects
+                last_yolo_result_seq = result_seq
 
             risk = threat.assess_all(
                 objects=objects,
@@ -2040,19 +2863,35 @@ def main():
                 driver_override=driver_override,
             )
 
+            now = time.perf_counter()
+            if PRINT_SENSOR_VALUES and now - last_sensor_print_time >= SENSOR_PRINT_INTERVAL_SEC:
+                print_sensor_values(
+                    ultrasonic_readings=ultrasonic_readings,
+                    tof_reading=tof_reading,
+                    tof_sensor=tof_sensor,
+                    objects=objects,
+                    risk=risk,
+                    state=state,
+                    brake_percent=brake_percent,
+                    ego_speed=ego_speed,
+                    steering_angle=steering_angle,
+                )
+                last_sensor_print_time = now
+
             brake_controller.apply(state, brake_percent, risk)
 
-            logger.write(
-                state=state,
-                brake_percent=brake_percent,
-                risk=risk,
-                ultrasonic_readings=ultrasonic_readings,
-                tof_reading=tof_reading,
-                ego_speed=ego_speed,
-                steering_angle=steering_angle,
-            )
+            if logger is not None:
+                logger.write(
+                    state=state,
+                    brake_percent=brake_percent,
+                    risk=risk,
+                    ultrasonic_readings=ultrasonic_readings,
+                    tof_reading=tof_reading,
+                    ego_speed=ego_speed,
+                    steering_angle=steering_angle,
+                )
 
-            if SHOW_PREVIEW and frame is not None and CV2_AVAILABLE:
+            if preview_enabled and frame is not None and CV2_AVAILABLE:
                 overlay = draw_overlay(
                     frame=frame,
                     objects=objects,
@@ -2075,6 +2914,11 @@ def main():
         print("[INFO] Cleaning up...")
 
         try:
+            async_yolo.stop()
+        except Exception:
+            pass
+
+        try:
             shutdown_risk = AdvancedRisk(
                 threat_type=ThreatType.NONE,
                 desired_state=AEBState.RELEASE,
@@ -2095,7 +2939,8 @@ def main():
         except Exception:
             pass
 
-        logger.close()
+        if logger is not None:
+            logger.close()
         tof_sensor.release()
         camera.release()
 
@@ -2106,7 +2951,8 @@ def main():
             GPIO.cleanup()
 
         print("[INFO] AEB stopped.")
-        print(f"[INFO] Log saved: {LOG_CSV_PATH}")
+        if logger is not None:
+            print(f"[INFO] Log saved: {LOG_CSV_PATH}")
 
 
 if __name__ == "__main__":
