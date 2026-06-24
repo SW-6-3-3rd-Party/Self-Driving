@@ -35,6 +35,85 @@ import signal
 import sys
 import threading
 import time
+import select
+
+try:
+    import termios
+    import tty
+    import fcntl
+    TERMINAL_KEYBOARD_AVAILABLE = True
+except Exception:
+    termios = None
+    tty = None
+    fcntl = None
+    TERMINAL_KEYBOARD_AVAILABLE = False
+# ============================================================
+# Runtime / terminal helpers
+# ============================================================
+
+LAST_RUNTIME_WARNING = ""
+LAST_RUNTIME_WARNING_TIME = 0.0
+_WARN_LAST_TIME = {}
+DASHBOARD_HAS_DRAWN = False
+
+
+def runtime_warn(key, message, interval_sec=2.0):
+    """
+    Throttled runtime warning.
+
+    In dashboard mode, asynchronous print() calls from sensor / YOLO threads
+    corrupt the redrawn terminal UI. So during dashboard operation we store the
+    newest warning and show it inside the dashboard instead of printing a new line.
+    """
+    global LAST_RUNTIME_WARNING, LAST_RUNTIME_WARNING_TIME
+
+    now = time.perf_counter()
+    last = _WARN_LAST_TIME.get(key, 0.0)
+    if now - last < interval_sec:
+        return
+    _WARN_LAST_TIME[key] = now
+
+    text = str(message)
+    LAST_RUNTIME_WARNING = text
+    LAST_RUNTIME_WARNING_TIME = now
+
+    dashboard_mode = (
+        globals().get("PRINT_SENSOR_VALUES", False)
+        and globals().get("PRETTY_TERMINAL_OUTPUT", False)
+        and DASHBOARD_HAS_DRAWN
+    )
+    if not dashboard_mode:
+        print(text)
+
+
+def terminal_clear_and_home():
+    return "\033[2J\033[H"
+
+
+def terminal_hide_cursor():
+    return "\033[?25l"
+
+
+def terminal_show_cursor():
+    return "\033[?25h"
+
+
+def write_dashboard(lines):
+    """
+    Atomic-ish terminal dashboard redraw.
+    Uses CRLF so output remains correct even if terminal input mode changes.
+    """
+    global DASHBOARD_HAS_DRAWN
+
+    prefix = ""
+    if globals().get("PRETTY_TERMINAL_OUTPUT", False) and globals().get("TERMINAL_CLEAR_EACH_PRINT", False):
+        prefix = terminal_clear_and_home() + terminal_hide_cursor()
+
+    text = prefix + "\r\n".join(lines) + "\r\n"
+    sys.stdout.write(text)
+    if globals().get("TERMINAL_FORCE_FLUSH", False):
+        sys.stdout.flush()
+    DASHBOARD_HAS_DRAWN = True
 from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
@@ -71,14 +150,71 @@ YOLO_MODEL_PATH = "yolov5nu.pt"
 YOLO_CONF = 0.40
 YOLO_IMGSZ = 128
 YOLO_EVERY_N_FRAMES = 10
-YOLO_MAX_DET = 3
-YOLO_TARGET_CLASS_IDS = [0]  # fastest: person only. Use [0, 1, 2, 3, 5, 7] for person + vehicles.
+YOLO_MAX_DET = 6
+YOLO_TARGET_CLASS_IDS = [0, 1, 2, 3, 5, 7]  # person, bicycle, car, motorcycle, bus, truck
 
 # Ego vehicle inputs. Replace get_ego_speed_mps() and get_steering_angle_deg()
 # if you have encoder / CAN / servo command signals.
 DEFAULT_EGO_SPEED_MPS = 0.0
 DEFAULT_STEERING_ANGLE_DEG = 0.0
-EGO_MOVING_MIN_SPEED_MPS = 0.10
+
+# Keyboard simulation control for test bench / Raspberry Pi terminal.
+# Up    : speed +1 km/h
+# Down  : speed -1 km/h, never below 0
+# Left  : steer left
+# Right : steer right
+# S     : steer front
+KEYBOARD_CONTROL_ENABLED = True
+KEYBOARD_SPEED_STEP_KMH = 1.0
+KEYBOARD_STEERING_ANGLE_DEG = 15.0
+KEYBOARD_MAX_SPEED_KMH = 30.0
+
+# Production-style AEB demonstration features for project presentation.
+# These do not make this a real vehicle-grade safety system, but they mirror
+# common 양산차 AEB concepts: readiness/degraded mode, sensor fusion confidence,
+# speed-adaptive safety envelope, driver override, and decision rationale.
+PRODUCTION_AEB_DEMO_FEATURES = True
+SENSOR_FUSION_CAMERA_STALE_SEC = 1.5
+SENSOR_FUSION_MIN_CONFIDENCE_OK = 55
+SENSOR_FUSION_MIN_CONFIDENCE_DEGRADED = 25
+AEB_SAFETY_ENVELOPE_GAIN = 1.00
+AEB_WARNING_ENVELOPE_GAIN = 0.75
+AEB_DRIVER_OVERRIDE_KEY = "O"
+
+# Stricter engagement tuning.
+# These make the dashboard Result turn ON only when the situation is clearly dangerous.
+# FCW / PREFILL can still be shown as risk states, but Result means actual emergency braking.
+STRICT_AEB_MODE = True
+STRICT_FULL_STOP_DIST_GAIN = 1.00      # Production-like: brake when scaled stopping envelope reaches target.
+STRICT_PARTIAL_STOP_DIST_GAIN = 0.82   # Partial brake before full stopping envelope is exhausted.
+STRICT_FCW_STOP_DIST_GAIN = 0.62       # FCW before actual brake.
+STRICT_EMERGENCY_RESULT_MIN_BRAKE = 60 # Result ON only for partial/full emergency braking.
+
+# ============================================================
+# Production-like 1/32 scale model tuning
+# ============================================================
+# Public standards/protocols define AEB purpose, operating speed ranges and test scenarios,
+# but OEM internal trigger maps are proprietary. This code therefore uses a physics-based
+# surrogate: real-equivalent TTC, required deceleration, and stopping envelope, then scales
+# only distances by 1/32 for the RC car.
+MODEL_SCALE_DENOMINATOR = 32.0
+REAL_EQUIVALENT_SPEED_MODE = True
+REAL_MIN_AEB_SPEED_KMH = 10.0       # NHTSA FMVSS 127 lower operating speed basis.
+REAL_MAX_DECEL_MPS2 = 7.85          # ~0.8g dry-road emergency braking reference.
+REAL_SYSTEM_DELAY_SEC = 0.35        # perception + decision + brake build-up surrogate.
+REAL_SAFETY_MARGIN_M = 1.00         # final clearance margin in real-car scale.
+REAL_FCW_TTC_SEC = 2.00
+REAL_PARTIAL_TTC_SEC = 1.20
+REAL_FULL_TTC_SEC = 0.60
+REAL_FCW_REQ_DECEL_MPS2 = 2.00
+REAL_PREFILL_REQ_DECEL_MPS2 = 3.00
+REAL_PARTIAL_REQ_DECEL_MPS2 = 4.50
+REAL_FULL_REQ_DECEL_MPS2 = 7.00
+REAL_UNKNOWN_FULL_STOP_DISTANCE_M = 4.0   # scaled to 12.5cm on 1/32 RC.
+REAL_DIAGONAL_FCW_DISTANCE_M = 2.0        # scaled to 6.25cm.
+REAL_DIAGONAL_PARTIAL_DISTANCE_M = 1.2    # scaled to 3.75cm.
+REAL_DIAGONAL_FULL_DISTANCE_M = 0.8       # scaled to 2.5cm.
+EGO_MOVING_MIN_SPEED_MPS = (REAL_MIN_AEB_SPEED_KMH / 3.6) / MODEL_SCALE_DENOMINATOR
 
 # RC car / test bench geometry.
 VEHICLE_WIDTH_M = 0.32
@@ -86,13 +222,13 @@ PATH_MARGIN_M = 0.12
 STEERING_PATH_GAIN = 0.65
 
 # Brake performance. Must be tuned with actual stop tests.
-AVAILABLE_DECEL_MPS2 = 3.0
-REACTION_TIME_SEC = 0.25
-SAFETY_MARGIN_M = 0.25
+AVAILABLE_DECEL_MPS2 = REAL_MAX_DECEL_MPS2 / MODEL_SCALE_DENOMINATOR
+REACTION_TIME_SEC = REAL_SYSTEM_DELAY_SEC
+SAFETY_MARGIN_M = REAL_SAFETY_MARGIN_M / MODEL_SCALE_DENOMINATOR
 MAX_AEB_RANGE_M = 6.0
 
 # Ultrasonic settings.
-ULTRA_MIN_CM = 3
+ULTRA_MIN_CM = 2
 ULTRA_MAX_CM = 500
 ULTRA_MEDIAN_SIZE = 3
 ULTRA_TIMEOUT_SEC = 0.015
@@ -100,9 +236,9 @@ ULTRA_CROSSTALK_DELAY_SEC = 0.005
 ULTRA_FUSION_MAX_M = 3.5
 ULTRA_DIAGONAL_ANGLE_DEG = 35.0
 ULTRA_STALE_SEC = 0.50
-DIAGONAL_FCW_DISTANCE_M = 0.85
-DIAGONAL_PARTIAL_BRAKE_DISTANCE_M = 0.55
-DIAGONAL_FULL_BRAKE_DISTANCE_M = 0.35
+DIAGONAL_FCW_DISTANCE_M = REAL_DIAGONAL_FCW_DISTANCE_M / MODEL_SCALE_DENOMINATOR
+DIAGONAL_PARTIAL_BRAKE_DISTANCE_M = REAL_DIAGONAL_PARTIAL_DISTANCE_M / MODEL_SCALE_DENOMINATOR
+DIAGONAL_FULL_BRAKE_DISTANCE_M = REAL_DIAGONAL_FULL_DISTANCE_M / MODEL_SCALE_DENOMINATOR
 
 # Front ToF settings.
 # I2C mode uses Raspberry Pi GPIO2/GPIO3:
@@ -140,37 +276,37 @@ TOF_FUSION_MAX_M = 4.00
 TOF_STALE_SEC = 0.40
 TOF_CENTER_GATE_RATIO = 0.36
 
-UNKNOWN_STOP_DISTANCE_M = 0.50
-STOP_HOLD_DISTANCE_M = 0.40
+UNKNOWN_STOP_DISTANCE_M = REAL_UNKNOWN_FULL_STOP_DISTANCE_M / MODEL_SCALE_DENOMINATOR
+STOP_HOLD_DISTANCE_M = 3.0 / MODEL_SCALE_DENOMINATOR
 STOP_HOLD_SEC = 1.0
 
 # Tracking / kinematics.
-MIN_OBJECT_CONF = 0.55
-MIN_TRACK_AGE_FOR_AEB = 3
+MIN_OBJECT_CONF = 0.70  # production-like: reduce false positives
+MIN_TRACK_AGE_FOR_AEB = 5  # stable person track before AEB
 TRACK_MATCH_DISTANCE_PX = 90
 TRACK_MAX_MISSED_SEC = 0.7
 POS_FILTER_ALPHA = 0.55
 VEL_FILTER_ALPHA = 0.35
 
 # Advanced threat thresholds.
-FCW_TTC_SEC = 2.5
-PARTIAL_TTC_SEC = 1.5
-FULL_TTC_SEC = 0.8
+FCW_TTC_SEC = REAL_FCW_TTC_SEC
+PARTIAL_TTC_SEC = REAL_PARTIAL_TTC_SEC
+FULL_TTC_SEC = REAL_FULL_TTC_SEC
 
-FCW_REQ_DECEL = 1.2
-PREFILL_REQ_DECEL = 1.8
-PARTIAL_REQ_DECEL = 2.5
-FULL_REQ_DECEL = 4.0
+FCW_REQ_DECEL = REAL_FCW_REQ_DECEL_MPS2
+PREFILL_REQ_DECEL = REAL_PREFILL_REQ_DECEL_MPS2
+PARTIAL_REQ_DECEL = REAL_PARTIAL_REQ_DECEL_MPS2
+FULL_REQ_DECEL = REAL_FULL_REQ_DECEL_MPS2
 
-CROSSING_HORIZON_SEC = 3.0
-CROSSING_FCW_TIME_GAP_SEC = 1.2
-CROSSING_PARTIAL_TIME_GAP_SEC = 0.75
-CROSSING_FULL_TIME_GAP_SEC = 0.45
+CROSSING_HORIZON_SEC = 2.0
+CROSSING_FCW_TIME_GAP_SEC = 0.90
+CROSSING_PARTIAL_TIME_GAP_SEC = 0.55
+CROSSING_FULL_TIME_GAP_SEC = 0.35
 
-CUTIN_HORIZON_SEC = 3.0
-CUTIN_FCW_TIME_GAP_SEC = 1.0
-CUTIN_PARTIAL_TIME_GAP_SEC = 0.65
-CUTIN_FULL_TIME_GAP_SEC = 0.40
+CUTIN_HORIZON_SEC = 2.0
+CUTIN_FCW_TIME_GAP_SEC = 0.75
+CUTIN_PARTIAL_TIME_GAP_SEC = 0.50
+CUTIN_FULL_TIME_GAP_SEC = 0.32
 
 CLEAR_CONFIRM_COUNT = 5
 LOOP_HZ = 25
@@ -526,25 +662,257 @@ def is_vehicle(label):
 # Ego Vehicle Signals
 # ============================================================
 
+class KeyboardEgoController:
+    """
+    Robust non-blocking terminal keyboard controller for Raspberry Pi / Linux TTY.
+
+    Uses cbreak-style input instead of raw mode. Raw mode disables terminal
+    output processing on many Linux terminals, which can make the dashboard
+    line breaks look broken. Cbreak keeps output normal while still allowing
+    non-blocking key reads.
+
+    Keys:
+      Up arrow    : speed +1 km/h
+      Down arrow  : speed -1 km/h, clamped at 0
+      Left arrow  : steering left
+      Right arrow : steering right
+      S           : steering front
+      O           : toggle driver override / AEB release
+
+    Fallback:
+      W/X : speed up/down
+      A/D : steer left/right
+      S   : steer front
+      O   : override
+      Q   : quit
+    """
+
+    def __init__(self):
+        self.enabled = bool(KEYBOARD_CONTROL_ENABLED)
+        self.speed_kmh = DEFAULT_EGO_SPEED_MPS * 3.6
+        self.steering_angle_deg = DEFAULT_STEERING_ANGLE_DEG
+        self.driver_override = False
+        self._old_terminal_settings = None
+        self._old_file_flags = None
+        self._input_enabled = False
+        self._fd = None
+        self._key_buffer = bytearray()
+        self.last_key_text = "--"
+
+    def start(self):
+        if not self.enabled:
+            return
+        if not TERMINAL_KEYBOARD_AVAILABLE or not sys.stdin.isatty():
+            self.enabled = False
+            print("[WARN] Keyboard control disabled: run from a real terminal/SSH TTY, not VSCode output panel.")
+            return
+
+        try:
+            self._fd = sys.stdin.fileno()
+            self._old_terminal_settings = termios.tcgetattr(self._fd)
+            self._old_file_flags = fcntl.fcntl(self._fd, fcntl.F_GETFL)
+
+            # cbreak-like mode: no line buffering, no echo, but keep output
+            # processing so '\n' / ANSI redraws work correctly.
+            new_settings = termios.tcgetattr(self._fd)
+            new_settings[3] &= ~(termios.ICANON | termios.ECHO)
+            new_settings[6][termios.VMIN] = 0
+            new_settings[6][termios.VTIME] = 0
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, new_settings)
+            fcntl.fcntl(self._fd, fcntl.F_SETFL, self._old_file_flags | os.O_NONBLOCK)
+
+            self._input_enabled = True
+            print("[INFO] Keyboard control enabled")
+            print("       UP/DOWN speed, LEFT/RIGHT steering, S front, O override, Q quit")
+            print("       fallback: W/X speed, A/D steering, S front, O override, Q quit")
+        except Exception as e:
+            self.enabled = False
+            self._restore_terminal()
+            print("[WARN] Keyboard control init failed:", e)
+
+    def _restore_terminal(self):
+        if self._fd is not None and self._old_file_flags is not None:
+            try:
+                fcntl.fcntl(self._fd, fcntl.F_SETFL, self._old_file_flags)
+            except Exception:
+                pass
+        if self._fd is not None and self._old_terminal_settings is not None:
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_terminal_settings)
+            except Exception:
+                pass
+
+    def stop(self):
+        self._restore_terminal()
+        self._input_enabled = False
+
+    def _speed_up(self):
+        self.speed_kmh = min(
+            KEYBOARD_MAX_SPEED_KMH,
+            self.speed_kmh + KEYBOARD_SPEED_STEP_KMH,
+        )
+        self.last_key_text = "Speed Up"
+
+    def _speed_down(self):
+        self.speed_kmh = max(
+            0.0,
+            self.speed_kmh - KEYBOARD_SPEED_STEP_KMH,
+        )
+        self.last_key_text = "Speed Down"
+
+    def _steer_left(self):
+        self.steering_angle_deg = -abs(KEYBOARD_STEERING_ANGLE_DEG)
+        self.last_key_text = "Steer Left"
+
+    def _steer_right(self):
+        self.steering_angle_deg = abs(KEYBOARD_STEERING_ANGLE_DEG)
+        self.last_key_text = "Steer Right"
+
+    def _steer_front(self):
+        self.steering_angle_deg = 0.0
+        self.last_key_text = "Steer Front"
+
+    def _toggle_driver_override(self):
+        self.driver_override = not self.driver_override
+        self.last_key_text = "Override ON" if self.driver_override else "Override OFF"
+
+    def _request_quit(self):
+        global running
+        running = False
+        self.last_key_text = "Quit"
+
+    def _consume_one_key(self):
+        if not self._key_buffer:
+            return False
+
+        # Arrow keys: ESC [ A/B/C/D or ESC O A/B/C/D.
+        # Robustly handle partial/unknown ESC sequences so the input buffer
+        # never gets stuck.
+        if self._key_buffer[0] == 0x1B:
+            if len(self._key_buffer) < 2:
+                return False
+
+            if self._key_buffer[1] not in (ord("["), ord("O")):
+                del self._key_buffer[0]
+                return True
+
+            if len(self._key_buffer) < 3:
+                return False
+
+            seq = bytes(self._key_buffer[:3])
+            if seq in (b"\x1b[A", b"\x1bOA"):
+                del self._key_buffer[:3]
+                self._speed_up()
+                return True
+            if seq in (b"\x1b[B", b"\x1bOB"):
+                del self._key_buffer[:3]
+                self._speed_down()
+                return True
+            if seq in (b"\x1b[D", b"\x1bOD"):
+                del self._key_buffer[:3]
+                self._steer_left()
+                return True
+            if seq in (b"\x1b[C", b"\x1bOC"):
+                del self._key_buffer[:3]
+                self._steer_right()
+                return True
+
+            del self._key_buffer[0]
+            return True
+
+        ch = chr(self._key_buffer[0])
+        del self._key_buffer[0]
+
+        if ch in {"w", "W"}:
+            self._speed_up()
+        elif ch in {"x", "X"}:
+            self._speed_down()
+        elif ch in {"a", "A"}:
+            self._steer_left()
+        elif ch in {"d", "D"}:
+            self._steer_right()
+        elif ch in {"s", "S"}:
+            self._steer_front()
+        elif ch in {"o", "O"}:
+            self._toggle_driver_override()
+        elif ch in {"q", "Q"}:
+            self._request_quit()
+        return True
+
+    def poll(self):
+        if not self.enabled or not self._input_enabled or self._fd is None:
+            return
+
+        while True:
+            try:
+                chunk = os.read(self._fd, 64)
+            except BlockingIOError:
+                break
+            except Exception as e:
+                runtime_warn("keyboard_read", f"[WARN] Keyboard read failed: {e}", 3.0)
+                return
+
+            if not chunk:
+                break
+            self._key_buffer.extend(chunk)
+
+        guard = 0
+        while self._key_buffer and guard < 64:
+            before = len(self._key_buffer)
+            consumed = self._consume_one_key()
+            guard += 1
+            if not consumed or len(self._key_buffer) == before:
+                break
+
+        if len(self._key_buffer) > 16:
+            del self._key_buffer[:-16]
+
+    def get_speed_mps(self):
+        # speed_kmh is entered/displayed as real-car-equivalent speed.
+        # The actual 1/32 RC physical speed is scaled down by 32.
+        real_equiv_mps = max(0.0, self.speed_kmh) / 3.6
+        if REAL_EQUIVALENT_SPEED_MODE:
+            return real_equiv_mps / MODEL_SCALE_DENOMINATOR
+        return real_equiv_mps
+
+    def get_steering_angle_deg(self):
+        return self.steering_angle_deg
+
+    def get_driver_override(self):
+        return bool(self.driver_override)
+
+
+keyboard_ego = KeyboardEgoController()
+
+
 def get_ego_speed_mps():
     """
-    Replace this with encoder / CAN speed / motor command based speed.
+    Keyboard-controlled simulated speed for test bench.
+    Replace this with encoder / CAN speed / motor command based speed later.
     """
+    if keyboard_ego.enabled:
+        return keyboard_ego.get_speed_mps()
     return DEFAULT_EGO_SPEED_MPS
 
 
 def get_steering_angle_deg():
     """
-    Replace this with steering angle sensor or servo command.
+    Keyboard-controlled simulated steering.
     Positive = right steering, negative = left steering.
+    Replace this with steering angle sensor or servo command later.
     """
+    if keyboard_ego.enabled:
+        return keyboard_ego.get_steering_angle_deg()
     return DEFAULT_STEERING_ANGLE_DEG
 
 
 def get_driver_override():
     """
     Return True when manual override / emergency stop / driver braking is active.
+    In the keyboard test bench, O toggles this value.
     """
+    if keyboard_ego.enabled:
+        return keyboard_ego.get_driver_override()
     return False
 
 # ============================================================
@@ -927,7 +1295,7 @@ class ToFSensor:
                 return None
         except Exception as e:
             self.last_i2c_error_text = f"{self.sensor_model} read failed: {e}"
-            print("[WARN] Front ToF read failed:", e)
+            runtime_warn("front_tof_read", f"[WARN] Front ToF read failed: {e}", 2.0)
             return None
 
         distance_m = mm / 1000.0
@@ -945,7 +1313,7 @@ class ToFSensor:
             try:
                 msg = self.can_bus.recv(timeout=TOF_CAN_TIMEOUT_SEC)
             except Exception as e:
-                print("[WARN] CAN ToF read failed:", e)
+                runtime_warn("can_tof_read", f"[WARN] CAN ToF read failed: {e}", 2.0)
                 return None
 
             if msg is None:
@@ -986,7 +1354,7 @@ class ToFSensor:
             else:
                 chunk = self.serial_port.read(16)
         except Exception as e:
-            print("[WARN] UART ToF read failed:", e)
+            runtime_warn("uart_tof_read", f"[WARN] UART ToF read failed: {e}", 2.0)
             return None
 
         if chunk:
@@ -1427,7 +1795,7 @@ class AsyncYOLOWorker:
             try:
                 detections = self.detector.detect(frame)
             except Exception as e:
-                print("[WARN] Async YOLO detect failed:", e)
+                runtime_warn("async_yolo_detect", f"[WARN] Async YOLO detect failed: {e}", 2.0)
                 detections = []
 
             now = time.perf_counter()
@@ -1696,26 +2064,42 @@ class AdvancedThreatAssessment:
         self.reaction_time = REACTION_TIME_SEC
         self.safety_margin = SAFETY_MARGIN_M
 
+    def _to_real_distance(self, distance_m):
+        return max(0.0, distance_m) * MODEL_SCALE_DENOMINATOR if REAL_EQUIVALENT_SPEED_MODE else max(0.0, distance_m)
+
+    def _to_real_speed(self, speed_mps):
+        return max(0.0, speed_mps) * MODEL_SCALE_DENOMINATOR if REAL_EQUIVALENT_SPEED_MODE else max(0.0, speed_mps)
+
+    def _from_real_distance(self, distance_m):
+        return max(0.0, distance_m) / MODEL_SCALE_DENOMINATOR if REAL_EQUIVALENT_SPEED_MODE else max(0.0, distance_m)
+
     def stopping_distance(self, v_ego):
-        return (
-            v_ego * self.reaction_time
-            + (v_ego ** 2) / (2.0 * max(0.01, self.available_decel))
-            + self.safety_margin
+        # Compute in real-car-equivalent domain, then scale distance back to RC.
+        v_real = self._to_real_speed(v_ego)
+        stop_real = (
+            v_real * REAL_SYSTEM_DELAY_SEC
+            + (v_real ** 2) / (2.0 * max(0.01, REAL_MAX_DECEL_MPS2))
+            + REAL_SAFETY_MARGIN_M
         )
+        return self._from_real_distance(stop_real)
 
     def required_decel(self, distance_m, closing_speed_mps):
-        remain = max(0.01, distance_m - self.safety_margin)
-        if closing_speed_mps <= 0:
+        # Required deceleration is kept in real-car units, so thresholds such as
+        # 4.5m/s^2 or 7.0m/s^2 remain meaningful and presentation-friendly.
+        remain_real = max(0.05, self._to_real_distance(distance_m) - REAL_SAFETY_MARGIN_M)
+        closing_real = self._to_real_speed(closing_speed_mps)
+        if closing_real <= 0:
             return 0.0
-        return (closing_speed_mps ** 2) / (2.0 * remain)
+        return (closing_real ** 2) / (2.0 * remain_real)
 
     def ttc_longitudinal(self, distance_m, closing_speed_mps):
-        if closing_speed_mps <= 0.03:
+        if closing_speed_mps <= 0.003:
             return 999.0
+        # TTC is scale-invariant when both distance and speed are scaled by 1/32.
         return distance_m / closing_speed_mps
 
     def ego_is_moving(self, v_ego):
-        return v_ego > EGO_MOVING_MIN_SPEED_MPS
+        return self._to_real_speed(v_ego) * 3.6 >= REAL_MIN_AEB_SPEED_KMH
 
     def controllable_closing_speed(self, measured_closing_mps, v_ego, fallback_speed_mps=0.0):
         if not self.ego_is_moving(v_ego):
@@ -1763,7 +2147,7 @@ class AdvancedThreatAssessment:
         # Fallback for near in-path object when velocity estimate is unstable.
         fallback = 0.0
         if obj.in_path_now and obj.z_m < 2.0 and measured_closing < 0.05:
-            fallback = v_ego * 0.75
+            fallback = v_ego * 0.50
 
         return self.controllable_closing_speed(measured_closing, v_ego, fallback)
 
@@ -1878,27 +2262,38 @@ class AdvancedThreatAssessment:
             )
 
         # Longitudinal AEB: object is currently in predicted path.
+        # Strict mode prevents early/annoying engagement. AEB braking requires
+        # either a very close target, tight TTC, high required decel, or a
+        # speed-adaptive stopping envelope that clearly exceeds target range.
         if obj.in_path_now and ego_moving:
-            if ttc <= FULL_TTC_SEC or req_decel >= FULL_REQ_DECEL or stop_dist >= distance_m:
+            full_by_distance = distance_m <= UNKNOWN_STOP_DISTANCE_M
+            full_by_envelope = stop_dist >= distance_m * STRICT_FULL_STOP_DIST_GAIN
+            partial_by_envelope = stop_dist >= distance_m * STRICT_PARTIAL_STOP_DIST_GAIN
+            fcw_by_envelope = stop_dist >= distance_m * STRICT_FCW_STOP_DIST_GAIN
+
+            if full_by_distance or ttc <= FULL_TTC_SEC or req_decel >= FULL_REQ_DECEL or full_by_envelope:
                 desired_state = AEBState.FULL_BRAKE
                 brake = 100
                 reason = (
-                    f"Longitudinal FULL: TTC={ttc:.2f}s, reqDecel={req_decel:.2f}, "
+                    f"Longitudinal FULL(strict): TTC={ttc:.2f}s, reqDecel={req_decel:.2f}, "
                     f"stopDist={stop_dist:.2f}m, dist={distance_m:.2f}m"
                 )
-            elif ttc <= PARTIAL_TTC_SEC or req_decel >= PARTIAL_REQ_DECEL:
+            elif ttc <= PARTIAL_TTC_SEC or req_decel >= PARTIAL_REQ_DECEL or partial_by_envelope:
                 desired_state = AEBState.PARTIAL_BRAKE
                 brake = 60
-                reason = f"Longitudinal PARTIAL: TTC={ttc:.2f}s, reqDecel={req_decel:.2f}, dist={distance_m:.2f}m"
+                reason = (
+                    f"Longitudinal PARTIAL(strict): TTC={ttc:.2f}s, reqDecel={req_decel:.2f}, "
+                    f"stopDist={stop_dist:.2f}m, dist={distance_m:.2f}m"
+                )
             elif req_decel >= PREFILL_REQ_DECEL:
                 desired_state = AEBState.BRAKE_PREFILL
                 brake = 20
-                reason = f"Longitudinal PREFILL: reqDecel={req_decel:.2f}, dist={distance_m:.2f}m"
-            elif ttc <= FCW_TTC_SEC or req_decel >= FCW_REQ_DECEL or stop_dist >= distance_m * 0.75:
+                reason = f"Longitudinal PREFILL(strict): reqDecel={req_decel:.2f}, dist={distance_m:.2f}m"
+            elif ttc <= FCW_TTC_SEC or req_decel >= FCW_REQ_DECEL or fcw_by_envelope:
                 desired_state = AEBState.FCW
                 brake = 0
                 reason = (
-                    f"Longitudinal FCW: TTC={ttc:.2f}s, reqDecel={req_decel:.2f}, "
+                    f"Longitudinal FCW(strict): TTC={ttc:.2f}s, reqDecel={req_decel:.2f}, "
                     f"stopDist={stop_dist:.2f}m, dist={distance_m:.2f}m"
                 )
 
@@ -1983,7 +2378,7 @@ class AdvancedThreatAssessment:
             closing = self.controllable_closing_speed(
                 tof_reading.approach_speed_mps,
                 v_ego,
-                v_ego * 0.85,
+                v_ego * 0.55,
             )
             ttc = self.ttc_longitudinal(distance_m, closing)
             req_decel = self.required_decel(distance_m, closing)
@@ -1999,7 +2394,7 @@ class AdvancedThreatAssessment:
                     distance_m <= UNKNOWN_STOP_DISTANCE_M
                     or ttc <= FULL_TTC_SEC
                     or req_decel >= FULL_REQ_DECEL
-                    or stop_dist >= distance_m
+                    or stop_dist >= distance_m * STRICT_FULL_STOP_DIST_GAIN
                 )
             ):
                 desired = AEBState.FULL_BRAKE
@@ -2012,7 +2407,7 @@ class AdvancedThreatAssessment:
             elif ego_moving and (
                 ttc <= PARTIAL_TTC_SEC
                 or req_decel >= PARTIAL_REQ_DECEL
-                or stop_dist >= distance_m * 0.85
+                or stop_dist >= distance_m * STRICT_PARTIAL_STOP_DIST_GAIN
             ):
                 desired = AEBState.PARTIAL_BRAKE
                 brake = 60
@@ -2024,7 +2419,7 @@ class AdvancedThreatAssessment:
             elif ego_moving and (
                 ttc <= FCW_TTC_SEC
                 or req_decel >= FCW_REQ_DECEL
-                or stop_dist >= distance_m * 0.65
+                or stop_dist >= distance_m * STRICT_FCW_STOP_DIST_GAIN
             ):
                 desired = AEBState.FCW
                 brake = 0
@@ -2060,7 +2455,7 @@ class AdvancedThreatAssessment:
                 nearest.name,
                 nearest.approach_speed_mps,
             )
-            closing = self.controllable_closing_speed(ultra_closing, v_ego, v_ego * 0.60)
+            closing = self.controllable_closing_speed(ultra_closing, v_ego, v_ego * 0.40)
             ttc = self.ttc_longitudinal(distance_m, closing)
             req_decel = self.required_decel(distance_m, closing)
 
@@ -2444,7 +2839,7 @@ class BrakeController:
             msg = can.Message(arbitration_id=CAN_ID_AEB_BRAKE_REQUEST, data=data, is_extended_id=False)
             self.can_bus.send(msg)
         except Exception as e:
-            print("[WARN] CAN send failed:", e)
+            runtime_warn("can_send", f"[WARN] CAN send failed: {e}", 2.0)
 
 # ============================================================
 # CSV Logger
@@ -2637,6 +3032,143 @@ def draw_overlay(frame, objects, risk, ultrasonic_readings, tof_reading, state, 
     return frame
 
 
+
+def cm_value_from_m(distance_m):
+    if distance_m is None:
+        return None
+    if not math.isfinite(distance_m):
+        return None
+    return distance_m * 100.0
+
+
+def calc_sensor_fusion_status(ultrasonic_readings, tof_reading, objects, yolo_result_age):
+    """
+    Production-style readiness indicator.
+
+    Important fix:
+    A front ToF sensor with "no target in range" is NOT a sensor fault.
+    Sensor health is evaluated by sensor availability, while target distance is
+    evaluated separately by the AEB risk logic.
+    """
+    front_alive = bool(tof_reading is not None and tof_reading.sensor_ok)
+    front_target = bool(
+        front_alive
+        and tof_reading.valid
+        and tof_reading.distance_m is not None
+    )
+
+    left = ultrasonic_readings.get(LEFT_DIAGONAL_NAME)
+    right = ultrasonic_readings.get(RIGHT_DIAGONAL_NAME)
+    left_ok = bool(left is not None and left.valid and left.distance_m is not None)
+    right_ok = bool(right is not None and right.valid and right.distance_m is not None)
+
+    camera_ok = bool(
+        objects
+        or (
+            yolo_result_age is not None
+            and math.isfinite(yolo_result_age)
+            and yolo_result_age <= SENSOR_FUSION_CAMERA_STALE_SEC
+        )
+    )
+
+    score = 0
+    score += 55 if front_alive else 0
+    score += 10 if front_target else 0
+    score += 15 if left_ok else 0
+    score += 15 if right_ok else 0
+    score += 5 if camera_ok else 0
+    score = int(clamp(score, 0, 100))
+
+    if front_alive and score >= SENSOR_FUSION_MIN_CONFIDENCE_OK:
+        status = "OK"
+    elif score >= SENSOR_FUSION_MIN_CONFIDENCE_DEGRADED:
+        status = "DEGRADED"
+    else:
+        status = "FAULT"
+
+    details = []
+    details.append("Front" if front_alive else "Front--")
+    details.append("Target" if front_target else "Target--")
+    details.append("Left" if left_ok else "Left--")
+    details.append("Right" if right_ok else "Right--")
+    details.append("Camera" if camera_ok else "Camera--")
+    return status, score, "/".join(details)
+
+
+def calc_aeb_mode(state, driver_override, sensor_status):
+    if driver_override:
+        return "OVERRIDE"
+    if state == AEBState.SENSOR_FAULT or sensor_status == "FAULT":
+        return "FAULT"
+    if state == AEBState.DEGRADED or sensor_status == "DEGRADED":
+        return "DEGRADED"
+    return "NORMAL"
+
+
+def calc_risk_level(state, brake_percent, risk, ego_speed=None):
+    # If the car is not moving, do not label a close object as CRITICAL only
+    # because the static safety margin is larger than the distance.
+    if (
+        ego_speed is not None
+        and ego_speed <= EGO_MOVING_MIN_SPEED_MPS
+        and state not in {AEBState.FULL_BRAKE, AEBState.STOP_HOLD}
+        and brake_percent <= 0
+    ):
+        if state == AEBState.SENSOR_FAULT:
+            return "FAULT"
+        if state == AEBState.DEGRADED:
+            return "DEGRADED"
+        return "CLEAR"
+
+    if state in {AEBState.FULL_BRAKE, AEBState.STOP_HOLD} or brake_percent >= 100:
+        return "CRITICAL"
+    if state == AEBState.PARTIAL_BRAKE or brake_percent >= 60:
+        return "HIGH"
+    if state == AEBState.BRAKE_PREFILL:
+        return "LOW"
+    if brake_percent > 0:
+        return "MEDIUM"
+    if state == AEBState.FCW:
+        return "LOW"
+    if risk.distance_m is not None and risk.stopping_distance_m > 0:
+        ratio = risk.distance_m / max(0.01, risk.stopping_distance_m)
+        if ratio <= 1.0:
+            return "CRITICAL"
+        if ratio <= 1.35:
+            return "HIGH"
+        if ratio <= 1.75:
+            return "MEDIUM"
+        if ratio <= 2.25:
+            return "LOW"
+    return "CLEAR"
+
+
+def calc_decision_basis(risk):
+    reason = risk.reason or ""
+    if "stopDist" in reason:
+        return "Stopping Distance"
+    if "reqDecel" in reason or "req" in reason:
+        return "Required Decel"
+    if "TTC" in reason:
+        return "TTC"
+    if "ToF" in reason:
+        return "Front Range"
+    if "Diagonal" in reason or "ultrasonic" in reason:
+        return "Side Range"
+    if "Crossing" in reason:
+        return "Crossing Prediction"
+    if "Cut-in" in reason:
+        return "Cut-in Prediction"
+    if risk.threat_type == ThreatType.SENSOR_FAULT:
+        return "Sensor Health"
+    return risk.threat_type.name
+
+
+def calc_safety_envelope_cm(risk):
+    if risk.stopping_distance_m is None:
+        return None
+    return risk.stopping_distance_m * AEB_SAFETY_ENVELOPE_GAIN * 100.0
+
 def print_sensor_values(
     ultrasonic_readings,
     tof_reading,
@@ -2647,22 +3179,24 @@ def print_sensor_values(
     brake_percent,
     ego_speed,
     steering_angle,
+    driver_override=False,
+    yolo_result_age=999.0,
 ):
     """
-    Fast minimal terminal dashboard.
-    - Dashboard title is exactly DASHBOARD.
-    - Sensor names are Front / Left / Right and distances are shown in cm.
-    - Object detection display is person-only.
-    - Final result line shows only AEB emergency braking ON/OFF.
-    - Summary keeps only speed(km/h), steering direction, and risk distance.
+    Stable terminal dashboard.
+    - Title is exactly DASHBOARD.
+    - Sensor names are Front / Left / Right.
+    - Distances are in cm.
+    - Detected-object display grouped by position and class.
+    - Final result line shows AEB emergency braking ON/OFF.
+    - Uses a single redraw call to prevent command-line corruption.
     """
-    def distance_text(cm):
+    def distance_text(cm, width=7):
         if cm is None or not math.isfinite(cm) or cm > 9000:
-            return "--- cm"
-        return f"{cm:.0f} cm"
+            return f"{'---':>{width}} cm"
+        return f"{cm:>{width}.0f} cm"
 
     def steering_text(angle_deg):
-        # Tune threshold if your servo center has offset/noise.
         if angle_deg <= -3.0:
             return "Left"
         if angle_deg >= 3.0:
@@ -2676,65 +3210,119 @@ def print_sensor_values(
             return "Left"
         return "Right"
 
-    def person_count_text(position_key):
-        count = sum(
-            1
+    def object_count_text(position_key):
+        labels = [
+            obj.label
             for obj in objects
-            if obj.label == "person" and object_position(obj) == position_key
-        )
-        return f"person {count}" if count > 0 else "none"
+            if object_position(obj) == position_key
+        ]
+        if not labels:
+            return "none"
+        counts = Counter(labels)
+        return ", ".join(f"{label} {count}" for label, count in sorted(counts.items()))
+
+    def sensor_health_text(valid, sensor_ok=True):
+        if not sensor_ok:
+            return "FAULT"
+        return "OK" if valid else "NO TARGET"
 
     front_cm = None
-    if tof_reading is not None and tof_reading.valid and tof_reading.filtered_mm is not None:
-        front_cm = tof_reading.filtered_mm / 10.0
+    front_valid = False
+    front_sensor_ok = False
+    if tof_reading is not None:
+        front_sensor_ok = bool(tof_reading.sensor_ok)
+        front_valid = bool(tof_reading.valid and tof_reading.filtered_mm is not None)
+        if front_valid:
+            front_cm = tof_reading.filtered_mm / 10.0
 
     left = ultrasonic_readings.get(LEFT_DIAGONAL_NAME)
     right = ultrasonic_readings.get(RIGHT_DIAGONAL_NAME)
-    left_cm = left.filtered_cm if left is not None and left.valid else None
-    right_cm = right.filtered_cm if right is not None and right.valid else None
+    left_valid = bool(left is not None and left.valid and left.filtered_cm is not None)
+    right_valid = bool(right is not None and right.valid and right.filtered_cm is not None)
+    left_cm = left.filtered_cm if left_valid else None
+    right_cm = right.filtered_cm if right_valid else None
 
-    speed_kmh = ego_speed * 3.6
+    rc_speed_kmh = ego_speed * 3.6
+    speed_kmh = rc_speed_kmh * MODEL_SCALE_DENOMINATOR if REAL_EQUIVALENT_SPEED_MODE else rc_speed_kmh
     threat_distance_cm = risk.distance_m * 100.0 if risk.distance_m is not None else None
-    brake_on = brake_percent > 0 or state in {
-        AEBState.BRAKE_PREFILL,
-        AEBState.PARTIAL_BRAKE,
-        AEBState.FULL_BRAKE,
-        AEBState.STOP_HOLD,
-    }
+
+    # Result means actual emergency braking, not early warning or prefill.
+    # This avoids "AEB ON" appearing too easily during BRAKE_PREFILL.
+    brake_on = (
+        brake_percent >= STRICT_EMERGENCY_RESULT_MIN_BRAKE
+        or state in {
+            AEBState.PARTIAL_BRAKE,
+            AEBState.FULL_BRAKE,
+            AEBState.STOP_HOLD,
+        }
+    )
+    if driver_override:
+        brake_on = False
+
     result_text = "ON" if brake_on else "OFF"
 
-    lines = []
-    if PRETTY_TERMINAL_OUTPUT and TERMINAL_CLEAR_EACH_PRINT:
-        lines.append("\033[2J\033[H")
+    sensor_status, sensor_confidence, sensor_detail = calc_sensor_fusion_status(
+        ultrasonic_readings=ultrasonic_readings,
+        tof_reading=tof_reading,
+        objects=objects,
+        yolo_result_age=yolo_result_age,
+    )
+    aeb_mode = calc_aeb_mode(state, driver_override, sensor_status)
+    risk_level = calc_risk_level(state, brake_percent, risk, ego_speed=ego_speed)
+    decision_basis = calc_decision_basis(risk)
+    safety_envelope_cm = calc_safety_envelope_cm(risk)
 
-    lines.extend([
-        "=" * 34,
+    warning_text = ""
+    if LAST_RUNTIME_WARNING and time.perf_counter() - LAST_RUNTIME_WARNING_TIME <= 5.0:
+        warning_text = LAST_RUNTIME_WARNING.replace("\n", " ")[:70]
+
+    last_key = keyboard_ego.last_key_text if keyboard_ego.enabled else "OFF"
+    override_text = "ON" if driver_override else "OFF"
+    camera_text = "FRESH" if yolo_result_age <= SENSOR_FUSION_CAMERA_STALE_SEC else "STALE"
+
+    lines = [
+        "=" * 44,
         "DASHBOARD",
-        "=" * 34,
-        f"Front : {distance_text(front_cm):>8}",
-        f"Left  : {distance_text(left_cm):>8}",
-        f"Right : {distance_text(right_cm):>8}",
-    ])
+        "=" * 44,
+        "Sensors (cm)",
+        f"  Front : {distance_text(front_cm)}  {sensor_health_text(front_valid, front_sensor_ok)}",
+        f"  Left  : {distance_text(left_cm)}  {'OK' if left_valid else '---'}",
+        f"  Right : {distance_text(right_cm)}  {'OK' if right_valid else '---'}",
+        "-" * 44,
+        "Detected Object",
+        f"  Front : {object_count_text('Front')}",
+        f"  Left  : {object_count_text('Left')}",
+        f"  Right : {object_count_text('Right')}",
+        "-" * 44,
+        "Vehicle",
+        f"  Speed         : {speed_kmh:5.1f} km/h real-eq",
+        f"  Steering      : {steering_text(steering_angle)}",
+        f"  Risk Distance : {distance_text(threat_distance_cm)}",
+        f"  Safe Envelope : {distance_text(safety_envelope_cm)}",
+        f"  Scale         : 1/{MODEL_SCALE_DENOMINATOR:.0f} distance model",
+        "-" * 44,
+        "AEB",
+        f"  Risk Level    : {risk_level}",
+        f"  Mode          : {aeb_mode}",
+        f"  Sensor Fusion : {sensor_status} ({sensor_confidence}%)",
+        f"  Fusion Detail : {sensor_detail}",
+        f"  Camera        : {camera_text}",
+        f"  Decision      : {decision_basis}",
+        f"  Override      : {override_text}",
+        f"  Last Key      : {last_key}",
+    ]
 
+    if warning_text:
+        lines.append(f"  Warning       : {warning_text}")
 
     lines.extend([
-        "-" * 34,
-        "Detected Object",
-        f"Front : {person_count_text('Front')}",
-        f"Left  : {person_count_text('Left')}",
-        f"Right : {person_count_text('Right')}",
-        "-" * 34,
-        f"Speed         : {speed_kmh:.1f} km/h",
-        f"Steering      : {steering_text(steering_angle)}",
-        f"Risk Distance : {distance_text(threat_distance_cm)}",
-        "=" * 34,
-        f"Result        : AEB Emergency Braking {result_text}",
-        "Ctrl+C Exit",
+        "-" * 44,
+        f"Result : AEB Emergency Braking {result_text}",
+        "=" * 44,
+        "Keys: UP/DOWN speed | LEFT/RIGHT steer | S front | O override | Q quit",
     ])
 
-    sys.stdout.write("\n".join(lines) + "\n")
-    if TERMINAL_FORCE_FLUSH:
-        sys.stdout.flush()
+    write_dashboard(lines)
 
 # ============================================================
 # Main
@@ -2753,7 +3341,7 @@ def tof_config_summary():
     if interface == "I2C":
         return (
             f"TOF_INTERFACE=I2C, TOF_SENSOR_MODEL={TOF_SENSOR_MODEL}, "
-            f"I2C_ADDR=0x{TOF_I2C_ADDRESS:02X}, TOF_SCALE={TOF_DISTANCE_SCALE}"
+            f"I2C_ADDR=0x{TOF_I2C_ADDRESS:02X}, TOF_SCALE={TOF_DISTANCE_SCALE}, MODEL=1/{MODEL_SCALE_DENOMINATOR:.0f}"
         )
     if interface == "UART":
         return (
@@ -2790,10 +3378,14 @@ def main():
     print(f"[CONFIG] ENABLE_CSV_LOG={ENABLE_CSV_LOG}")
     print(f"[CONFIG] PRINT_SENSOR_VALUES={PRINT_SENSOR_VALUES}")
     print(f"[CONFIG] PRETTY_TERMINAL_OUTPUT={PRETTY_TERMINAL_OUTPUT}")
+    print(f"[CONFIG] KEYBOARD_CONTROL_ENABLED={KEYBOARD_CONTROL_ENABLED}")
+    print(f"[CONFIG] PRODUCTION_AEB_DEMO_FEATURES={PRODUCTION_AEB_DEMO_FEATURES}")
     print(f"[CONFIG] SHOW_PREVIEW={SHOW_PREVIEW}, PREVIEW_ENABLED={preview_enabled}")
     if SHOW_PREVIEW and not preview_enabled:
         print("[WARN] Preview disabled because no DISPLAY/WAYLAND_DISPLAY was found.")
     print("============================================================")
+
+    keyboard_ego.start()
 
     ultrasonic = UltrasonicManager()
     tof_sensor = ToFSensor()
@@ -2811,6 +3403,7 @@ def main():
     last_objects = []
     last_yolo_result_seq = -1
     YOLO_RESULT_STALE_SEC = 0.7
+    CAMERA_OBJECT_STALE_SEC = 1.2
     last_sensor_print_time = 0.0
     yolo_interval = max(1, int(YOLO_EVERY_N_FRAMES))
     loop_period = 1.0 / max(1, LOOP_HZ)
@@ -2819,6 +3412,7 @@ def main():
         while running:
             loop_start = time.perf_counter()
 
+            keyboard_ego.poll()
             ego_speed = get_ego_speed_mps()
             steering_angle = get_steering_angle_deg()
             driver_override = get_driver_override()
@@ -2849,6 +3443,11 @@ def main():
                 )
                 last_objects = objects
                 last_yolo_result_seq = result_seq
+            elif result_age > CAMERA_OBJECT_STALE_SEC:
+                # Do not keep stale camera/YOLO detections forever. Range sensors
+                # continue to protect the vehicle while camera inference is late.
+                objects = []
+                last_objects = []
 
             risk = threat.assess_all(
                 objects=objects,
@@ -2875,6 +3474,8 @@ def main():
                     brake_percent=brake_percent,
                     ego_speed=ego_speed,
                     steering_angle=steering_angle,
+                    driver_override=driver_override,
+                    yolo_result_age=result_age,
                 )
                 last_sensor_print_time = now
 
@@ -2911,7 +3512,19 @@ def main():
             time.sleep(max(0.0, loop_period - elapsed))
 
     finally:
+        try:
+            sys.stdout.write(terminal_show_cursor())
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        try:
+            keyboard_ego.stop()
+        except Exception:
+            pass
+
         print("[INFO] Cleaning up...")
+
 
         try:
             async_yolo.stop()
