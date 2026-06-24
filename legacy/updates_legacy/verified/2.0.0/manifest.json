@@ -1,0 +1,26 @@
+{
+  "package_version": "2.0.0",
+  "targets": [
+    {
+      "device_id": "HPVC",
+      "current_version": "1.0.0",
+      "target_version": "2.0.0",
+      "file_name": "hpvc_app_v2.tar.gz",
+      "checksum": "5d1bde9afbb00bfb67c3b27c0083afd01b2ce218f146c85bd51dd47246c7d703"
+    },
+    {
+      "device_id": "FRONT_ZONE",
+      "current_version": "1.0.0",
+      "target_version": "2.0.0",
+      "file_name": "front_zone_v2.bin",
+      "checksum": "bd9d1ad797c09205df32726e2246ff81bf4dfc8ab9f8d57a62313bb17e8b4f85"
+    },
+    {
+      "device_id": "REAR_ZONE",
+      "current_version": "1.0.0",
+      "target_version": "2.0.0",
+      "file_name": "rear_zone_v2.bin",
+      "checksum": "7d228ca40626e135c418bfce1aa22a670003ca38d7c7f1e511dd000527c38aa8"
+    }
+  ]
+}

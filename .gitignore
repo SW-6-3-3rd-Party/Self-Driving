@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.pyc
+
+updates/downloaded/
+updates/staging/
+updates/backup/
+updates/logs/
+
+*.zip
+*.tar.gz
+*.bin
+.env
+
+test_artifacts/

@@ -1,0 +1,17 @@
+{
+  "CENTER_RPI": {
+    "mode": "tcp",
+    "ip": "192.168.10.2",
+    "port": 8202
+  },
+  "FRONT_ZONE": {
+    "mode": "tcp",
+    "ip": "192.168.10.11",
+    "port": 8211
+  },
+  "REAR_ZONE": {
+    "mode": "tcp",
+    "ip": "192.168.10.12",
+    "port": 8212
+  }
+}
