@@ -3,20 +3,28 @@ import "./App.css";
 
 function App() {
   const [hpvcIp, setHpvcIp] = useState("192.168.201.17");
+  const [pcBackendUrl, setPcBackendUrl] = useState("http://127.0.0.1:8080");
+
   const [vehicleStatus, setVehicleStatus] = useState(null);
   const [otaStatus, setOtaStatus] = useState(null);
   const [versions, setVersions] = useState(null);
+  const [packages, setPackages] = useState(null);
+
+  const [otaTarget, setOtaTarget] = useState("HPVC");
+  const [otaTargetVersion, setOtaTargetVersion] = useState("2.0.0");
+  const [otaFilename, setOtaFilename] = useState("hpvc_2.0.0.zip");
+
   const [log, setLog] = useState([]);
 
-  const baseUrl = `http://${hpvcIp}:8000`;
+  const hpvcBaseUrl = `http://${hpvcIp}:8000`;
 
   const addLog = (message) => {
     const time = new Date().toLocaleTimeString();
-    setLog((prev) => [`[${time}] ${message}`, ...prev].slice(0, 20));
+    setLog((prev) => [`[${time}] ${message}`, ...prev].slice(0, 30));
   };
 
-  const requestJson = async (path, options = {}) => {
-    const response = await fetch(`${baseUrl}${path}`, {
+  const requestHpvcJson = async (path, options = {}) => {
+    const response = await fetch(`${hpvcBaseUrl}${path}`, {
       headers: {
         "Content-Type": "application/json",
         ...(options.headers || {}),
@@ -27,7 +35,25 @@ function App() {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(data.reason || data.error || "Request failed");
+      throw new Error(data.reason || data.error || data.message || "HPVC request failed");
+    }
+
+    return data;
+  };
+
+  const requestPcBackendJson = async (path, options = {}) => {
+    const response = await fetch(`${pcBackendUrl}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.reason || data.error || data.message || "PC Backend request failed");
     }
 
     return data;
@@ -35,7 +61,7 @@ function App() {
 
   const getVehicleStatus = async () => {
     try {
-      const data = await requestJson("/vehicle/status");
+      const data = await requestHpvcJson("/vehicle/status");
       setVehicleStatus(data);
       addLog("차량 상태 조회 성공");
     } catch (error) {
@@ -43,29 +69,74 @@ function App() {
     }
   };
 
-  const getOtaStatus = async () => {
+  const getHpvcOtaStatus = async () => {
     try {
-      const data = await requestJson("/ota/status");
-      setOtaStatus(data);
-      addLog(`OTA 상태 조회: ${data.state}, ${data.progress}%`);
+      const data = await requestHpvcJson("/ota/status");
+      addLog(`HPVC OTA 상태: ${data.state}, ${data.progress}%`);
+      return data;
     } catch (error) {
-      addLog(`OTA 상태 조회 실패: ${error.message}`);
+      addLog(`HPVC OTA 상태 조회 실패: ${error.message}`);
+      return null;
     }
+  };
+
+  const getPcOtaStatus = async () => {
+    try {
+      const data = await requestPcBackendJson("/api/ota/status");
+      setOtaStatus(data);
+
+      const latest = data.latest_status;
+      if (latest) {
+        addLog(`PC OTA 상태 조회: ${latest.state}, ${latest.progress}%`);
+      } else {
+        addLog("PC OTA 상태 조회 성공");
+      }
+
+      return data;
+    } catch (error) {
+      addLog(`PC OTA 상태 조회 실패: ${error.message}`);
+      return null;
+    }
+  };
+
+  const getOtaStatus = async () => {
+    await getPcOtaStatus();
   };
 
   const getVersions = async () => {
     try {
-      const data = await requestJson("/version");
+      const data = await requestHpvcJson("/version");
       setVersions(data);
-      addLog("버전 조회 성공");
+      addLog("HPVC 버전 조회 성공");
     } catch (error) {
       addLog(`버전 조회 실패: ${error.message}`);
     }
   };
 
+  const getPackages = async () => {
+    try {
+      const data = await requestPcBackendJson("/api/ota/packages");
+      setPackages(data);
+      addLog(`OTA 패키지 목록 조회 성공: ${data.packages?.length || 0}개`);
+    } catch (error) {
+      addLog(`OTA 패키지 목록 조회 실패: ${error.message}`);
+    }
+  };
+
+  const checkPcBackend = async () => {
+    try {
+      const data = await requestPcBackendJson("/api/ota/health");
+      addLog(
+        `PC OTA Backend OK: mqtt_connected=${data.mqtt_connected}, artifact=${data.artifact_base_url}`
+      );
+    } catch (error) {
+      addLog(`PC OTA Backend 확인 실패: ${error.message}`);
+    }
+  };
+
   const sendManualControl = async (driveCommand, steeringCommand, targetSpeed) => {
     try {
-      const data = await requestJson("/control/manual", {
+      const data = await requestHpvcJson("/control/manual", {
         method: "POST",
         body: JSON.stringify({
           drive_command: driveCommand,
@@ -86,7 +157,7 @@ function App() {
 
   const sendTurnSignal = async (turnSignal) => {
     try {
-      const data = await requestJson("/control/turn-signal", {
+      const data = await requestHpvcJson("/control/turn-signal", {
         method: "POST",
         body: JSON.stringify({
           turn_signal: turnSignal,
@@ -102,11 +173,25 @@ function App() {
 
   const startOta = async () => {
     try {
-      const data = await requestJson("/ota/start", {
+      const data = await requestPcBackendJson("/api/ota/start", {
         method: "POST",
+        body: JSON.stringify({
+          target: otaTarget,
+          target_version: otaTargetVersion,
+          filename: otaFilename,
+        }),
       });
 
-      addLog(data.message || "OTA 시작 요청 성공");
+      addLog(`OTA Job publish 성공: ${data.job.job_id}`);
+      setOtaStatus({
+        latest_job: data.job,
+        latest_status: {
+          state: "JOB_PUBLISHED",
+          progress: 0,
+          running: true,
+        },
+      });
+
       pollOtaStatus();
     } catch (error) {
       addLog(`OTA 시작 실패: ${error.message}`);
@@ -115,25 +200,28 @@ function App() {
 
   const pollOtaStatus = () => {
     const timer = setInterval(async () => {
-      try {
-        const data = await requestJson("/ota/status");
-        setOtaStatus(data);
+      const data = await getPcOtaStatus();
 
-        if (!data.running) {
-          clearInterval(timer);
-          addLog(`OTA 종료: ${data.state}, ${data.progress}%`);
-          getVersions();
-        }
-      } catch (error) {
+      if (!data || !data.latest_status) {
+        return;
+      }
+
+      const latest = data.latest_status;
+
+      if (!latest.running) {
         clearInterval(timer);
-        addLog(`OTA polling 실패: ${error.message}`);
+
+        addLog(`OTA 종료: ${latest.state}, ${latest.progress}%`);
+
+        await getVersions();
+        await getHpvcOtaStatus();
       }
     }, 1000);
   };
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.target.tagName === "INPUT") return;
+      if (event.target.tagName === "INPUT" || event.target.tagName === "SELECT") return;
       if (event.repeat) return;
 
       switch (event.key) {
@@ -169,17 +257,32 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>HPVC PC HMI</h1>
-        <p>Manual Control · Turn Signal · OTA Manager</p>
+        <p>Manual Control · Turn Signal · MQTT OTA Manager</p>
       </header>
 
       <section className="card connection-card">
         <h2>Connection</h2>
+
         <div className="input-row">
           <label>HPVC IP</label>
           <input
             value={hpvcIp}
             onChange={(e) => setHpvcIp(e.target.value)}
           />
+        </div>
+
+        <div className="input-row">
+          <label>PC OTA Backend URL</label>
+          <input
+            value={pcBackendUrl}
+            onChange={(e) => setPcBackendUrl(e.target.value)}
+          />
+        </div>
+
+        <div className="button-row">
+          <button onClick={checkPcBackend}>PC Backend 확인</button>
+          <button onClick={getVehicleStatus}>차량 상태 조회</button>
+          <button onClick={getVersions}>버전 조회</button>
         </div>
       </section>
 
@@ -226,17 +329,53 @@ function App() {
         </section>
 
         <section className="card">
-          <h2>OTA Manager</h2>
+          <h2>MQTT OTA Manager</h2>
+
+          <div className="input-row">
+            <label>Target</label>
+            <select
+              value={otaTarget}
+              onChange={(e) => setOtaTarget(e.target.value)}
+            >
+              <option value="HPVC">HPVC</option>
+              <option value="CENTER_RPI">CENTER_RPI</option>
+              <option value="FRONT_ZONE">FRONT_ZONE</option>
+              <option value="REAR_ZONE">REAR_ZONE</option>
+            </select>
+          </div>
+
+          <div className="input-row">
+            <label>Target Version</label>
+            <input
+              value={otaTargetVersion}
+              onChange={(e) => setOtaTargetVersion(e.target.value)}
+            />
+          </div>
+
+          <div className="input-row">
+            <label>Package Filename</label>
+            <input
+              value={otaFilename}
+              onChange={(e) => setOtaFilename(e.target.value)}
+            />
+          </div>
 
           <div className="button-row">
-            <button onClick={getVersions}>버전 확인</button>
+            <button onClick={getPackages}>패키지 목록</button>
             <button onClick={getOtaStatus}>OTA 상태</button>
-            <button className="update" onClick={startOta}>업데이트 시작</button>
+            <button className="update" onClick={startOta}>
+              MQTT OTA 시작
+            </button>
           </div>
 
           <div className="status-box">
             <h3>OTA Status</h3>
             <pre>{otaStatus ? JSON.stringify(otaStatus, null, 2) : "-"}</pre>
+          </div>
+
+          <div className="status-box">
+            <h3>Packages</h3>
+            <pre>{packages ? JSON.stringify(packages, null, 2) : "-"}</pre>
           </div>
 
           <div className="status-box">
