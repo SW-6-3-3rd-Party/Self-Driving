@@ -4,5 +4,13 @@ dist/
 __pycache__/
 *.pyc
 
-packages/*.zip
 .env
+
+packages/
+test_artifacts/
+
+*.zip
+*.bin
+*.tar.gz
+
+updates/
