@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 import shutil
+import subprocess
 import time
 import zipfile
 from enum import Enum
@@ -40,13 +42,23 @@ class OTAManager:
         self.downloader = ArtifactDownloader()
         self.fota_dispatcher = FOTADispatcher()
 
-        self.updates_dir = BASE_DIR / "updates"
+        # 실제 HPVC 서비스 업데이트용 runtime 경로
+        self.runtime_dir = Path(
+            os.environ.get("HPVC_RUNTIME_DIR", "/home/pi/hpvc_runtime")
+        )
+        self.releases_dir = self.runtime_dir / "releases"
+        self.current_link = self.runtime_dir / "current"
+        self.service_name = os.environ.get("HPVC_SERVICE_NAME", "hpvc-ota.service")
+
+        # 업데이트 작업 결과물은 release 내부가 아니라 runtime 공용 updates에 저장
+        self.updates_dir = self.runtime_dir / "updates"
         self.download_dir = self.updates_dir / "downloaded"
         self.staging_dir = self.updates_dir / "staging"
         self.backup_dir = self.updates_dir / "backup"
         self.log_dir = self.updates_dir / "logs"
 
         for directory in (
+            self.releases_dir,
             self.download_dir,
             self.staging_dir,
             self.backup_dir,
@@ -55,6 +67,11 @@ class OTAManager:
             directory.mkdir(parents=True, exist_ok=True)
 
         self.version_path = CONFIG_DIR / "device_versions.json"
+
+        # HPVC 실제 apply/rollback 상태 관리
+        self._hpvc_previous_release = None
+        self._hpvc_new_release = None
+        self._hpvc_restart_required = False
 
     def get_status(self) -> dict:
         return {
@@ -87,6 +104,10 @@ class OTAManager:
         self.last_result = None
         self.error_code = None
         self.error_message = None
+
+        self._hpvc_previous_release = None
+        self._hpvc_new_release = None
+        self._hpvc_restart_required = False
 
         version_backup = None
 
@@ -135,6 +156,10 @@ class OTAManager:
             }
 
             self._publish(status_callback, self.last_result)
+
+            if ota_job.target == "HPVC" and self._hpvc_restart_required:
+                self._schedule_service_restart()
+
             return self.last_result
 
         except Exception as exc:
@@ -147,7 +172,11 @@ class OTAManager:
                     self.progress,
                     status_callback,
                 )
+
                 self._rollback_versions(version_backup)
+
+                if ota_job.target == "HPVC":
+                    self._rollback_hpvc_release()
 
             self._set_state(
                 OTAState.FAILED,
@@ -184,6 +213,9 @@ class OTAManager:
 
         if not job.artifact_url:
             raise ValueError("artifact_url is required")
+
+        if not job.target_version:
+            raise ValueError("target_version is required")
 
     def _download_artifact(
         self,
@@ -284,10 +316,12 @@ class OTAManager:
         if job.target == "HPVC":
             self._set_state(OTAState.APPLYING, 90, status_callback)
 
-            # 프로젝트 시연용:
-            # 실제 HPVC 재부팅/서비스 교체 대신 검증된 패키지를 staging까지만 수행하고
-            # version file을 갱신한다.
-            time.sleep(0.5)
+            self._apply_hpvc_release_update(
+                job=job,
+                staged_path=staged_path,
+            )
+
+            self._set_state(OTAState.APPLYING, 95, status_callback)
             return
 
         self._set_state(OTAState.FOTA_DISPATCHING, 85, status_callback)
@@ -300,6 +334,174 @@ class OTAManager:
         )
 
         self._set_state(OTAState.FOTA_DISPATCHING, 95, status_callback)
+
+    def _apply_hpvc_release_update(
+        self,
+        job: OTAJob,
+        staged_path: Path,
+    ):
+        if not self.current_link.exists():
+            raise RuntimeError(f"current link does not exist: {self.current_link}")
+
+        if not self.current_link.is_symlink():
+            raise RuntimeError(
+                f"current path must be symlink for safe OTA: {self.current_link}"
+            )
+
+        previous_release = self.current_link.resolve()
+        self._hpvc_previous_release = previous_release
+
+        source_root = self._find_hpvc_update_source(staged_path)
+
+        target_release_dir = self.releases_dir / job.target_version
+
+        if target_release_dir.exists():
+            shutil.rmtree(target_release_dir)
+
+        target_release_dir.mkdir(parents=True, exist_ok=True)
+
+        self._copy_release_source(
+            source_root=source_root,
+            target_release_dir=target_release_dir,
+        )
+
+        self._update_release_version_file(
+            release_dir=target_release_dir,
+            target=job.target,
+            target_version=job.target_version,
+        )
+
+        self._switch_current_link(target_release_dir)
+
+        self._hpvc_new_release = target_release_dir
+        self._hpvc_restart_required = True
+
+        print(
+            "[HPVC OTA] release applied:",
+            f"previous={previous_release}",
+            f"new={target_release_dir}",
+        )
+
+    def _find_hpvc_update_source(self, staged_path: Path) -> Path:
+        stage_dir = staged_path.parent
+        extract_dir = stage_dir / "extracted"
+
+        if staged_path.suffix.lower() != ".zip":
+            raise ValueError("HPVC OTA package must be a zip file")
+
+        if not extract_dir.exists():
+            raise ValueError(f"extracted directory not found: {extract_dir}")
+
+        # 권장 패키지 구조:
+        # hpvc_2.0.1.zip
+        # ├─ manifest.json
+        # └─ hpvc_ota/
+        #    ├─ config/
+        #    └─ ota/
+        hpvc_dir = extract_dir / "hpvc_ota"
+
+        if hpvc_dir.exists() and hpvc_dir.is_dir():
+            self._validate_hpvc_source_dir(hpvc_dir)
+            return hpvc_dir
+
+        # 예외적으로 zip 최상위에 config/ota가 바로 있는 구조도 허용
+        self._validate_hpvc_source_dir(extract_dir)
+        return extract_dir
+
+    def _validate_hpvc_source_dir(self, source_dir: Path):
+        config_dir = source_dir / "config"
+        ota_dir = source_dir / "ota"
+        ota_server = ota_dir / "ota_server.py"
+
+        if not config_dir.exists():
+            raise ValueError(f"HPVC package missing config directory: {config_dir}")
+
+        if not ota_dir.exists():
+            raise ValueError(f"HPVC package missing ota directory: {ota_dir}")
+
+        if not ota_server.exists():
+            raise ValueError(f"HPVC package missing ota/ota_server.py: {ota_server}")
+
+    def _copy_release_source(
+        self,
+        source_root: Path,
+        target_release_dir: Path,
+    ):
+        ignore_patterns = shutil.ignore_patterns(
+            ".git",
+            "__pycache__",
+            "*.pyc",
+            "*.zip",
+            "*.tar.gz",
+            "*.bin",
+            "updates",
+            "test_artifacts",
+        )
+
+        for item in source_root.iterdir():
+            src = item
+            dst = target_release_dir / item.name
+
+            if item.name in {".git", "__pycache__", "updates", "test_artifacts"}:
+                continue
+
+            if item.is_dir():
+                shutil.copytree(src, dst, ignore=ignore_patterns)
+            else:
+                if item.suffix in {".zip", ".bin", ".gz"}:
+                    continue
+                shutil.copy2(src, dst)
+
+        # 새 release에도 updates 기본 구조 생성
+        for subdir in ("downloaded", "staging", "backup", "logs"):
+            (target_release_dir / "updates" / subdir).mkdir(parents=True, exist_ok=True)
+
+    def _switch_current_link(self, target_release_dir: Path):
+        target_release_dir = target_release_dir.resolve()
+
+        temp_link = self.current_link.with_name("current.tmp")
+
+        if temp_link.exists() or temp_link.is_symlink():
+            temp_link.unlink()
+
+        os.symlink(target_release_dir, temp_link, target_is_directory=True)
+        os.replace(temp_link, self.current_link)
+
+    def _rollback_hpvc_release(self):
+        if not self._hpvc_previous_release:
+            return
+
+        if not self._hpvc_previous_release.exists():
+            print(
+                "[HPVC OTA] rollback skipped:",
+                f"previous release missing: {self._hpvc_previous_release}",
+            )
+            return
+
+        try:
+            self._switch_current_link(self._hpvc_previous_release)
+            print(
+                "[HPVC OTA] rollback current link:",
+                f"current -> {self._hpvc_previous_release}",
+            )
+        except Exception as exc:
+            print(f"[HPVC OTA] rollback failed: {exc}")
+
+    def _schedule_service_restart(self):
+        print(f"[HPVC OTA] scheduling service restart: {self.service_name}")
+
+        # SUCCESS/result publish 이후 서비스가 재시작되도록 약간 지연한다.
+        command = (
+            "sleep 2; "
+            f"sudo -n /usr/bin/systemctl restart {self.service_name}"
+        )
+
+        subprocess.Popen(
+            ["/bin/sh", "-c", command],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     def _backup_versions(self, job_id: str) -> Optional[Path]:
         if not self.version_path.exists():
@@ -323,6 +525,28 @@ class OTAManager:
         versions[target] = target_version
 
         with open(self.version_path, "w", encoding="utf-8") as f:
+            json.dump(versions, f, indent=2)
+
+    def _update_release_version_file(
+        self,
+        release_dir: Path,
+        target: str,
+        target_version: str,
+    ):
+        config_dir = release_dir / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        version_path = config_dir / "device_versions.json"
+
+        versions = {}
+
+        if version_path.exists():
+            with open(version_path, "r", encoding="utf-8") as f:
+                versions = json.load(f)
+
+        versions[target] = target_version
+
+        with open(version_path, "w", encoding="utf-8") as f:
             json.dump(versions, f, indent=2)
 
     def _sha256_file(self, path: Path) -> str:
