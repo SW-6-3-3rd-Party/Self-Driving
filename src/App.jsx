@@ -2,13 +2,8 @@ import { useEffect, useState } from "react";
 import "./App.css";
 
 function App() {
-<<<<<<< HEAD
-  const [hpvcIp, setHpvcIp] = useState("192.168.137.50");
-  const [pcBackendUrl, setPcBackendUrl] = useState("http://192.168.137.1:8080");
-=======
   const [hpvcIp, setHpvcIp] = useState("192.168.202.157");
   const [pcBackendUrl, setPcBackendUrl] = useState("http://127.0.0.1:8080");
->>>>>>> db6c34f (feat: updates LKAS/LCA/ACC button)
 
   const [vehicleStatus, setVehicleStatus] = useState(null);
   const [featureStatus, setFeatureStatus] = useState(null);
