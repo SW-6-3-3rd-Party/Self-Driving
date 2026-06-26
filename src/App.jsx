@@ -2,13 +2,26 @@ import { useEffect, useState } from "react";
 import "./App.css";
 
 function App() {
+<<<<<<< HEAD
   const [hpvcIp, setHpvcIp] = useState("192.168.137.50");
   const [pcBackendUrl, setPcBackendUrl] = useState("http://192.168.137.1:8080");
+=======
+  const [hpvcIp, setHpvcIp] = useState("192.168.202.157");
+  const [pcBackendUrl, setPcBackendUrl] = useState("http://127.0.0.1:8080");
+>>>>>>> db6c34f (feat: updates LKAS/LCA/ACC button)
 
   const [vehicleStatus, setVehicleStatus] = useState(null);
+  const [featureStatus, setFeatureStatus] = useState(null);
   const [otaStatus, setOtaStatus] = useState(null);
   const [versions, setVersions] = useState(null);
   const [packages, setPackages] = useState(null);
+
+  const [featureFlags, setFeatureFlags] = useState({
+    lkas_active: false,
+    lca_active: false,
+    acc_active: false,
+    aeb_active: false,
+  });
 
   const [otaTarget, setOtaTarget] = useState("HPVC");
   const [otaTargetVersion, setOtaTargetVersion] = useState("2.0.0");
@@ -59,14 +72,96 @@ function App() {
     return data;
   };
 
+  const normalizeFeatureFlags = (flags) => ({
+    lkas_active: Boolean(flags?.lkas_active),
+    lca_active: Boolean(flags?.lca_active),
+    acc_active: Boolean(flags?.acc_active),
+    aeb_active: Boolean(flags?.aeb_active),
+  });
+
+  const syncFeatureFlagsFromVehicleStatus = (data) => {
+    if (!data) return;
+
+    setFeatureFlags((prev) => ({
+      ...prev,
+      lkas_active: Boolean(data.lkas_active),
+      lca_active: Boolean(data.lca_active),
+      acc_active: Boolean(data.acc_active),
+      aeb_active: Boolean(data.aeb_active),
+    }));
+  };
+
   const getVehicleStatus = async () => {
     try {
       const data = await requestHpvcJson("/vehicle/status");
       setVehicleStatus(data);
+      syncFeatureFlagsFromVehicleStatus(data);
       addLog("차량 상태 조회 성공");
     } catch (error) {
       addLog(`차량 상태 조회 실패: ${error.message}`);
     }
+  };
+
+  const getFeatureStatus = async () => {
+    try {
+      const data = await requestHpvcJson("/features/status");
+      setFeatureStatus(data);
+
+      const flags = data.feature_flags || data.features;
+      if (flags) {
+        setFeatureFlags(normalizeFeatureFlags(flags));
+      }
+
+      addLog("기능 상태 조회 성공");
+    } catch (error) {
+      addLog(`기능 상태 조회 실패: ${error.message}`);
+    }
+  };
+
+  const updateFeatureFlags = async (changedFlags) => {
+    try {
+      const data = await requestHpvcJson("/features/enable", {
+        method: "POST",
+        body: JSON.stringify(changedFlags),
+      });
+
+      const flags = data.features || data.feature_flags || changedFlags;
+      const normalizedFlags = normalizeFeatureFlags(flags);
+
+      setFeatureFlags(normalizedFlags);
+      setFeatureStatus((prev) => ({
+        ...(prev || {}),
+        feature_flags: normalizedFlags,
+        features: normalizedFlags,
+      }));
+
+      addLog(
+        `기능 설정 성공: LKAS=${normalizedFlags.lkas_active}, LCA=${normalizedFlags.lca_active}, ACC=${normalizedFlags.acc_active}`
+      );
+
+      await getVehicleStatus();
+    } catch (error) {
+      addLog(`기능 설정 실패: ${error.message}`);
+    }
+  };
+
+  const toggleLkasLca = async () => {
+    const nextValue = !featureFlags.lkas_active;
+
+    // HPVC 정책상 lkas_active만 보내도 lca_active가 함께 변경됨.
+    // 전체 상태를 보내지 않아야 PC 화면 stale 상태가 다른 기능을 덮어쓰지 않음.
+    await updateFeatureFlags({
+      lkas_active: nextValue,
+    });
+  };
+
+  const toggleAcc = async () => {
+    const nextValue = !featureFlags.acc_active;
+
+    // ACC만 단독 변경한다.
+    await updateFeatureFlags({
+      acc_active: nextValue,
+    });
   };
 
   const getHpvcOtaStatus = async () => {
@@ -253,11 +348,15 @@ function App() {
     };
   }, [hpvcIp]);
 
+  useEffect(() => {
+    getFeatureStatus();
+  }, [hpvcIp]);
+
   return (
     <div className="app">
       <header className="header">
         <h1>HPVC PC HMI</h1>
-        <p>Manual Control · Turn Signal · MQTT OTA Manager</p>
+        <p>Manual Control · ADAS Feature Control · Turn Signal · MQTT OTA Manager</p>
       </header>
 
       <section className="card connection-card">
@@ -282,11 +381,44 @@ function App() {
         <div className="button-row">
           <button onClick={checkPcBackend}>PC Backend 확인</button>
           <button onClick={getVehicleStatus}>차량 상태 조회</button>
+          <button onClick={getFeatureStatus}>기능 상태 조회</button>
           <button onClick={getVersions}>버전 조회</button>
         </div>
       </section>
 
       <main className="grid">
+        <section className="card">
+          <h2>ADAS Feature Control</h2>
+
+          <div className="button-row">
+            <button
+              className={featureFlags.lkas_active ? "update" : ""}
+              onClick={toggleLkasLca}
+            >
+              LKAS / LCA {featureFlags.lkas_active ? "ON" : "OFF"}
+            </button>
+
+            <button
+              className={featureFlags.acc_active ? "update" : ""}
+              onClick={toggleAcc}
+            >
+              ACC {featureFlags.acc_active ? "ON" : "OFF"}
+            </button>
+
+            <button onClick={getFeatureStatus}>상태 새로고침</button>
+          </div>
+
+          <div className="status-box">
+            <h3>Feature Flags</h3>
+            <pre>{JSON.stringify(featureFlags, null, 2)}</pre>
+          </div>
+
+          <div className="status-box">
+            <h3>Feature Status</h3>
+            <pre>{featureStatus ? JSON.stringify(featureStatus, null, 2) : "-"}</pre>
+          </div>
+        </section>
+
         <section className="card">
           <h2>Manual Control</h2>
 
