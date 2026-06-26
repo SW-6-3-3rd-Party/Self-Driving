@@ -1,0 +1,7 @@
+numpy>=1.24
+opencv-python-headless>=4.8
+# Do not install ultralytics by default on Raspberry Pi.
+# Recent torch wheels can pull several GB of CUDA packages on aarch64.
+# app.py treats YOLO as optional and keeps UDP/camera running without it.
+# Raspberry Pi GPIO only. Install on the Pi, not on a desktop:
+# rpi-lgpio>=0.6

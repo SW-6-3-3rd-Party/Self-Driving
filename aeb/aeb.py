@@ -244,7 +244,8 @@ DIAGONAL_FULL_BRAKE_DISTANCE_M = REAL_DIAGONAL_FULL_DISTANCE_M / MODEL_SCALE_DEN
 # I2C mode uses Raspberry Pi GPIO2/GPIO3:
 #   ToF SOA/SDA -> Pi GPIO2 SDA1
 #   ToF SCL     -> Pi GPIO3 SCL1
-# GPIO1 and XSHUT are optional and unused by this code.
+#   ToF XSHUT   -> Pi GPIO26 (physical pin 37)
+# GPIO1 is optional and unused by this code.
 USE_TOF = True
 TOF_INTERFACE = "I2C"  # "I2C", "UART", or "CAN"
 TOF_CAN_CHANNEL = "can0"
@@ -268,6 +269,9 @@ TOF_UART_DEBUG_BYTES = True
 TOF_SENSOR_MODEL = "AUTO"  # "AUTO", "VL53L0X", or "VL53L1X"
 TOF_I2C_ADDRESS = 0x29
 TOF_I2C_DEBUG_SCAN = True
+TOF_XSHUT_GPIO = 26  # BCM GPIO26, physical pin 37. Set None to leave XSHUT unused.
+TOF_XSHUT_RESET_PULSE_SEC = 0.02
+TOF_XSHUT_BOOT_DELAY_SEC = 0.12
 TOF_DISTANCE_SCALE = 0.5
 TOF_MIN_M = 0.03
 TOF_MAX_M = 4.00
@@ -1067,6 +1071,7 @@ class ToFSensor:
         self.last_i2c_error_text = "--"
         self.uart_buffer = bytearray()
         self.interface = TOF_INTERFACE.upper()
+        self.xshut_ready = False
 
         if not USE_TOF:
             print("[INFO] Front ToF disabled by config.")
@@ -1191,6 +1196,8 @@ class ToFSensor:
             print("[WARN] I2C unavailable. Front ToF disabled.")
             return
 
+        self._prepare_xshut()
+
         try:
             self.i2c = busio.I2C(board.SCL, board.SDA)
         except Exception as e:
@@ -1233,6 +1240,30 @@ class ToFSensor:
                 msg for msg in [VL53L0X_IMPORT_ERROR, VL53L1X_IMPORT_ERROR] if msg
             ) or "VL53L0X/VL53L1X libraries unavailable"
         print("[WARN] No supported front ToF driver available.")
+
+    def _prepare_xshut(self):
+        if TOF_XSHUT_GPIO is None:
+            return
+        if not GPIO_AVAILABLE:
+            self.last_i2c_error_text = "XSHUT GPIO unavailable"
+            print("[WARN] ToF XSHUT requested but RPi.GPIO is unavailable.")
+            return
+
+        try:
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(TOF_XSHUT_GPIO, GPIO.OUT, initial=GPIO.LOW)
+            time.sleep(TOF_XSHUT_RESET_PULSE_SEC)
+            GPIO.output(TOF_XSHUT_GPIO, GPIO.HIGH)
+            time.sleep(TOF_XSHUT_BOOT_DELAY_SEC)
+            self.xshut_ready = True
+            print(
+                f"[INFO] Front ToF XSHUT enabled: BCM GPIO{TOF_XSHUT_GPIO} "
+                f"(physical pin 37)"
+            )
+        except Exception as e:
+            self.last_i2c_error_text = f"XSHUT setup failed: {e}"
+            print("[WARN] Front ToF XSHUT setup failed:", e)
 
     def _scan_i2c_bus(self):
         if self.i2c is None:
@@ -1561,6 +1592,12 @@ class ToFSensor:
         if self.sensor_model == "VL53L1X" and self.sensor is not None:
             try:
                 self.sensor.stop_ranging()
+            except Exception:
+                pass
+
+        if self.xshut_ready and GPIO_AVAILABLE and TOF_XSHUT_GPIO is not None:
+            try:
+                GPIO.output(TOF_XSHUT_GPIO, GPIO.LOW)
             except Exception:
                 pass
 
