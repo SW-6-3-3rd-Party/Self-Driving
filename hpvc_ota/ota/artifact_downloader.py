@@ -1,8 +1,7 @@
 import shutil
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-
-import requests
+from urllib.request import url2pathname
 
 
 class ArtifactDownloader:
@@ -12,7 +11,7 @@ class ArtifactDownloader:
         parsed = urlparse(artifact_url)
 
         if parsed.scheme == "file":
-            src = Path(unquote(parsed.path))
+            src = Path(url2pathname(unquote(parsed.path)))
 
             if not src.exists():
                 raise FileNotFoundError(f"artifact file not found: {src}")
@@ -21,6 +20,8 @@ class ArtifactDownloader:
             return output_path
 
         if parsed.scheme in ("http", "https"):
+            import requests
+
             with requests.get(artifact_url, stream=True, timeout=20) as response:
                 response.raise_for_status()
 
