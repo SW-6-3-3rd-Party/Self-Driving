@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import "./App.css";
 
 function App() {
-  const [hpvcIp, setHpvcIp] = useState("192.168.201.17");
-  const [pcBackendUrl, setPcBackendUrl] = useState("http://127.0.0.1:8080");
+  const [hpvcIp, setHpvcIp] = useState("192.168.137.50");
+  const [pcBackendUrl, setPcBackendUrl] = useState("http://192.168.137.1:8080");
 
   const [vehicleStatus, setVehicleStatus] = useState(null);
   const [otaStatus, setOtaStatus] = useState(null);

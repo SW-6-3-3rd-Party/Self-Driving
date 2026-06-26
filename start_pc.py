@@ -80,7 +80,7 @@ def main():
         print()
         print("[start_pc] all services started", flush=True)
         print("[start_pc] React HMI: http://127.0.0.1:5173", flush=True)
-        print("[start_pc] HPVC API target: http://192.168.201.17:8000", flush=True)
+        print("[start_pc] HPVC API target: http://192.168.137.50:8000", flush=True)
         print("[start_pc] press Ctrl+C to stop", flush=True)
 
         while True:

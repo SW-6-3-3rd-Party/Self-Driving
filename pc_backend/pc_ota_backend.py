@@ -19,13 +19,13 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 PACKAGES_DIR = BASE_DIR / "packages"
 
 # HPVC가 접근할 PC Wi-Fi IP
-PC_ARTIFACT_HOST = os.environ.get("PC_ARTIFACT_HOST", "192.168.200.251")
+PC_ARTIFACT_HOST = os.environ.get("PC_ARTIFACT_HOST", "192.168.137.1")
 
 # Flask Backend + Artifact HTTP Server port
 PC_BACKEND_PORT = int(os.environ.get("PC_BACKEND_PORT", "8080"))
 
 # PC 내부 Mosquitto Broker
-MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "127.0.0.1")
+MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "192.168.137.1")
 MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
 
 TOPIC_JOB = "hpvc/ota/job"
