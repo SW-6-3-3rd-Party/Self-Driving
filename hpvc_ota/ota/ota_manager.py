@@ -326,12 +326,15 @@ class OTAManager:
 
         self._set_state(OTAState.FOTA_DISPATCHING, 85, status_callback)
 
-        self.fota_dispatcher.dispatch(
+        fota_result = self.fota_dispatcher.dispatch(
             target=job.target,
             artifact_path=staged_path,
             target_version=job.target_version,
             job_id=job.job_id,
         )
+
+        if fota_result.get("result") != "SUCCESS":
+            raise RuntimeError(f"FOTA failed: {fota_result}")
 
         self._set_state(OTAState.FOTA_DISPATCHING, 95, status_callback)
 

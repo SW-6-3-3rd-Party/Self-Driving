@@ -1,6 +1,6 @@
 {
   "enable_mqtt": true,
-  "broker_host": "192.168.200.251",
+  "broker_host": "192.168.137.1",
   "broker_port": 1883,
   "client_id": "hpvc-ota-agent",
   "keepalive": 30,
