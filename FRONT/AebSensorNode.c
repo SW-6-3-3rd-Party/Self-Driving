@@ -6,9 +6,9 @@
 #include "IfxStm.h"
 #include "Geth/Eth/IfxGeth_Eth.h"
 
-#define AEB_VALID_TOF                         (1u << 0)
-#define AEB_VALID_ULTRA_LEFT                  (1u << 1)
-#define AEB_VALID_ULTRA_RIGHT                 (1u << 2)
+#define AEB_VALID_ULTRA_LEFT                  (1u << 0)
+#define AEB_VALID_ULTRA_RIGHT                 (1u << 1)
+#define AEB_VALID_TOF                         (1u << 2)
 
 #define AEB_ETH_TX_BUFFER_SIZE                (256u)
 #define AEB_ETH_RX_BUFFER_SIZE                (256u)

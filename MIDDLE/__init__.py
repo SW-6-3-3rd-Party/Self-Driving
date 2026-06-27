@@ -1,0 +1,2 @@
+"""MIDDLE perception ECU package."""
+

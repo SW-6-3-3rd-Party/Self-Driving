@@ -1,4 +1,4 @@
-# HPVC / Raspberry Pi #1
+# HPVC
 
 This directory contains the HPVC-side source and operating scripts for the RC car
 zonal architecture setup.
@@ -8,9 +8,9 @@ zonal architecture setup.
 ```text
 PC / HMI / OTA
   <-> Wi-Fi
-Raspberry Pi #1 / HPVC
+HPVC / Vehicle Controller
   <-> vehicle Ethernet switch
-Raspberry Pi #2 / Center Zone
+MIDDLE / Center Zone
 TC375 Front Zone
 TC375 Rear Zone
 ```
@@ -18,9 +18,9 @@ TC375 Rear Zone
 Current lab IPs:
 
 ```text
-RPi #1 Wi-Fi        192.168.219.104
-RPi #2 Wi-Fi        192.168.219.105
-RPi #1 eth0         192.168.10.1
+HPVC Wi-Fi        192.168.219.104
+MIDDLE Wi-Fi        192.168.219.105
+HPVC eth0         192.168.10.1
 TC375 Front         192.168.10.11
 TC375 Front MAC     00:00:0c:11:11:11
 ```
@@ -28,38 +28,52 @@ TC375 Front MAC     00:00:0c:11:11:11
 ## UDP Ports
 
 ```text
-RPi #2 -> RPi #1 lane/side ultrasonic : UDP 5005
-RPi #1 -> TC375 Front steering command: UDP 5100, source 5101
-TC375 Front -> RPi #1 steering status : UDP 5102
-TC375 Front -> RPi #1 front sensors   : UDP 5011
+MIDDLE -> HPVC lane/side/object     : UDP 5005
+HPVC -> TC375 Front steering command: UDP 5100, source 5101
+TC375 Front -> HPVC steering status : UDP 5102
+TC375 Front -> HPVC front sensors   : UDP 5011
+HPVC -> brake controller request    : UDP 5013, optional
 ```
 
 ## Files
 
 ```text
-RPI1/                     MATLAB/Python HPVC-side source files
+Models/                   Simulink validation/deployment models
 Interfaces/               UDP protocol notes
-scripts/start_rpi1.sh     RPi #1 runtime startup script
+scripts/start_hpvc.sh     HPVC runtime startup script
+hpvc_aeb.py               HPVC-side AEB fusion runtime
+```
+
+## HPVC AEB Runtime
+
+For bench validation without rebuilding the Simulink model, HPVC can run the
+Python HPVC AEB receiver. It fuses MIDDLE person detections with Front
+TC375 ToF/ultrasonic distances and prints the AEB state. Add `--brake-host` to
+transmit the `HPAB` brake request packet to a downstream brake controller.
+
+```sh
+python3 -m HPVC.hpvc_aeb
+python3 -m HPVC.hpvc_aeb --brake-host 192.168.10.12 --brake-port 5013
 ```
 
 Generated binaries, object files, logs, `slprj`, and `*_ert_rtw` directories are
 intentionally not included in this repository.
 
-## Start RPi #1
+## Start HPVC
 
-On Raspberry Pi #1:
+On HPVC:
 
 ```sh
-chmod +x ~/start_rpi1.sh
-~/start_rpi1.sh
+chmod +x ~/start_hpvc.sh
+~/start_hpvc.sh
 ```
 
 The script configures `eth0` as `192.168.10.1/24`, installs the static TC375
-front ARP entry, and starts `RPI1Deployment.elf`.
+front ARP entry, and starts `HPVCDeployment.elf`.
 
 ## Useful Checks
 
-Check RPi #2 packets:
+Check MIDDLE packets:
 
 ```sh
 sudo tcpdump -ni wlan0 udp and src host 192.168.219.105 and dst port 5005

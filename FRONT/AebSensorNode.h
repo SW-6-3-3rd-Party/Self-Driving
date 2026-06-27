@@ -60,16 +60,16 @@
 
 #define AEB_ETH_SRC_IP0                     (192u)
 #define AEB_ETH_SRC_IP1                     (168u)
-#define AEB_ETH_SRC_IP2                     (0u)
-#define AEB_ETH_SRC_IP3                     (50u)
+#define AEB_ETH_SRC_IP2                     (10u)
+#define AEB_ETH_SRC_IP3                     (11u)
 
-#define AEB_ETH_DST_IP0                     (255u)
-#define AEB_ETH_DST_IP1                     (255u)
-#define AEB_ETH_DST_IP2                     (255u)
-#define AEB_ETH_DST_IP3                     (255u)
+#define AEB_ETH_DST_IP0                     (192u)
+#define AEB_ETH_DST_IP1                     (168u)
+#define AEB_ETH_DST_IP2                     (10u)
+#define AEB_ETH_DST_IP3                     (1u)
 
-#define AEB_ETH_SRC_PORT                    (5005u)
-#define AEB_ETH_DST_PORT                    (5005u)
+#define AEB_ETH_SRC_PORT                    (5011u)
+#define AEB_ETH_DST_PORT                    (5011u)
 
 typedef struct
 {
@@ -79,7 +79,7 @@ typedef struct
     uint16  ultrasonicLeftCmX10;
     uint16  ultrasonicRightCmX10;
     uint16  tofDiag;               /* high byte: last model ID, low byte: ToF diagnostic code */
-    uint8   validMask;              /* bit0: ToF, bit1: left ultrasonic, bit2: right ultrasonic */
+    uint8   validMask;              /* bit0: left ultrasonic, bit1: right ultrasonic, bit2: ToF */
 } AebSensorNode_Frame;
 
 void AebSensorNode_init(void);
