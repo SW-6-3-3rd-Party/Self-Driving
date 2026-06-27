@@ -252,7 +252,25 @@ def list_packages():
 def start_ota():
     global latest_job
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if data is None:
+        if request.form:
+            data = request.form.to_dict()
+        elif request.args:
+            data = request.args.to_dict()
+        else:
+            raw_body = request.get_data(as_text=True)
+            if raw_body.strip():
+                return jsonify({
+                    "result": "rejected",
+                    "reason": "invalid JSON body",
+                    "raw_body": raw_body,
+                    "hint": (
+                        "Use Invoke-RestMethod, or send query parameters such as "
+                        "/api/ota/start?target=REAR_ZONE&target_version=2.0.1"
+                    ),
+                }), 400
+            data = {}
 
     target = data.get("target", "HPVC")
     target_version = data.get("target_version", "2.0.0")
