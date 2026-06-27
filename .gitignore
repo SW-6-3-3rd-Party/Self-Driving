@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# MATLAB / Simulink generated artifacts
+slprj/
+*_ert_rtw/
+*.slxc
+*.autosave
+
+# Build outputs and logs
+*.elf
+*.o
+*.dep
+*.log
+nohup.out
+
+# macOS metadata
+.DS_Store
+._*
