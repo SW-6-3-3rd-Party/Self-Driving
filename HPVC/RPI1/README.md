@@ -46,6 +46,12 @@ RPi UDP Receive
 --echo-back` 조합으로 UDP 왕복 경로를 먼저 검증할 수 있다. 이 경로는
 `R1DG` 진단 패킷을 재사용한다.
 
+실제 조향 게이팅은 JSON 센서 소스의 초음파 거리값을 사용한다. 우선 순위는
+`rear_left/middle_left/front_left` 또는 `rear_right/middle_right/front_right`
+키이고, 이 키가 없으면 기존 호환용 `left_ultrasonic_m` / `right_ultrasonic_m`
+값으로 대체한다. 현재는 실제 장비가 가진 값이 하나뿐이면 그 값으로 동작하고,
+새 센서 집계기가 들어오면 3개 게이트를 모두 검사한다.
+
 Raspberry Pi Blockset 26.1이 설치되어 있으며 배포 모델도 생성되어 있다.
 제어 코어의 portable C 코드는 다음과 같이 별도로 생성할 수 있다.
 
