@@ -106,7 +106,8 @@ configureRpi1Target('192.168.1.20', 'pi')
 RPi #2로 등록된 주소와 동일한 주소는 설정 함수가 거부한다. 비밀번호 인수는
 모델 파일에 저장되지 않고 MATLAB 원격 빌드 설정으로 전달된다.
 
-배포 모델은 부팅 시 자동 조향을 막기 위해 `LKAS Enable=false`로 생성된다.
-이 상태에서 Front TC375 UDP에는 `SteeringValid=0`, `EmergencyCenter=1`,
-`SteeringAngleRad=0`만 송신된다. TC375 주소는 실제 장치 설정 후
-`rccar.Tc375FrontAddress`에서 확정해야 한다.
+배포 모델은 실제 조향 테스트를 위해 `LKAS Enable=true`로 생성된다.
+MIDDLE 링크와 차선 제어 입력이 유효하면 Front TC375 UDP에는
+`SteeringValid=1`, `EmergencyCenter=0`, 실제 `SteeringAngleRad`가 송신된다.
+입력이 유효하지 않으면 기존처럼 `EmergencyCenter=1`로 센터 복귀만 요청한다.
+TC375 주소는 실제 장치 설정 후 `rccar.Tc375FrontAddress`에서 확정해야 한다.

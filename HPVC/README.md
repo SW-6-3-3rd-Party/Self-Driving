@@ -22,7 +22,7 @@ HPVC Wi-Fi        192.168.219.104
 MIDDLE Wi-Fi        192.168.219.105
 HPVC eth0         192.168.10.1
 TC375 Front         192.168.10.11
-TC375 Front MAC     00:00:0c:11:11:11
+TC375 Front MAC     02:37:50:ae:b0:01
 ```
 
 ## UDP Ports
@@ -70,6 +70,10 @@ chmod +x ~/start_hpvc.sh
 
 The script configures `eth0` as `192.168.10.1/24`, installs the static TC375
 front ARP entry, and starts `HPVCDeployment.elf`.
+
+The deployment model is generated with `LKAS Enable=true` so HPVC sends real
+`SteeringValid` HPSC commands when the MIDDLE link/lane path is valid. If the
+input becomes invalid, HPVC sends `EmergencyCenter` instead.
 
 ## Useful Checks
 

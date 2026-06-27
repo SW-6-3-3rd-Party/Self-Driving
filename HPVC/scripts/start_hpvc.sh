@@ -9,7 +9,7 @@ sudo ip addr flush dev eth0
 sudo ip addr add 192.168.10.1/24 dev eth0
 sudo ip route replace 192.168.10.0/24 dev eth0 src 192.168.10.1
 sudo ip neigh flush dev eth0 || true
-sudo ip neigh replace 192.168.10.11 lladdr 00:00:0c:11:11:11 dev eth0 nud permanent
+sudo ip neigh replace 192.168.10.11 lladdr 02:37:50:ae:b0:01 dev eth0 nud permanent
 
 sudo pkill -f '^./HPVCDeployment\.elf$' || true
 sudo pkill -f 'python3 -m HPVC.hpvc_aeb' || true
@@ -34,7 +34,7 @@ sleep 2
 sudo ip link set eth0 up
 sudo ip addr replace 192.168.10.1/24 dev eth0
 sudo ip route replace 192.168.10.0/24 dev eth0 src 192.168.10.1
-sudo ip neigh replace 192.168.10.11 lladdr 00:00:0c:11:11:11 dev eth0 nud permanent
+sudo ip neigh replace 192.168.10.11 lladdr 02:37:50:ae:b0:01 dev eth0 nud permanent
 
 echo "=== eth0 ==="
 ip -br addr show eth0

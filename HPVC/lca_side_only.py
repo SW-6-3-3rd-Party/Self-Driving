@@ -268,9 +268,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Use a manual distance for all three gate positions",
     )
     parser.add_argument("--skip-sensor-check", action="store_true", help="Send steering without checking ultrasonic distance")
-    parser.add_argument("--tc375-host", default="192.168.10.2")
+    parser.add_argument("--tc375-host", default="192.168.10.11")
     parser.add_argument("--tc375-port", type=int, default=5100)
-    parser.add_argument("--source-ip", default="192.168.10.10")
+    parser.add_argument("--source-ip", default="192.168.10.1")
     parser.add_argument("--angle-rad", type=float, default=0.15)
     parser.add_argument("--rate-rad-s", type=float, default=1.0)
     parser.add_argument("--steer-seconds", type=float, default=2.0)

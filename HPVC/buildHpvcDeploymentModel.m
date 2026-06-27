@@ -17,7 +17,11 @@ desktopFile = fullfile(rootDir, 'Models', [desktopModel '.slx']);
 deploymentFile = fullfile(rootDir, 'Models', [deploymentModel '.slx']);
 
 if isfile(deploymentFile) && ~force
-    fprintf('Keeping existing model: %s\n', deploymentFile);
+    load_system(deploymentFile);
+    setDeploymentSteeringEnable(deploymentModel, true);
+    save_system(deploymentModel, deploymentFile);
+    close_system(deploymentModel, 0);
+    fprintf('Updated existing model for real steering: %s\n', deploymentFile);
     return
 end
 buildHpvcDesktopValidationModel(true);
@@ -49,9 +53,9 @@ add_line(deploymentModel, receivePorts.Outport(2), sizeCheckPorts.Inport(1), ...
 add_line(deploymentModel, sizeCheckPorts.Outport(1), frontPorts.Inport(2), ...
     'autorouting', 'on');
 
-% Never enable steering automatically on boot. Replace this with the
-% vehicle supervisor enable signal after stationary safety tests.
-set_param([deploymentModel '/LKAS Enable'], 'Value', 'false');
+% Enable real steering output. The HPSC encoder still requires a fresh valid
+% MIDDLE link/lane before it sets SteeringValid.
+setDeploymentSteeringEnable(deploymentModel, true);
 replaceLogWithTerminator(deploymentModel, 'Steering Command');
 replaceLogWithTerminator(deploymentModel, 'Link Valid');
 replaceLogWithTerminator(deploymentModel, 'Packet Age s');
@@ -62,12 +66,21 @@ set_param(deploymentModel, 'StopTime', 'inf', 'EnablePacing', 'off');
 set_param(deploymentModel, 'HardwareBoard', 'Raspberry Pi (64bit)');
 clearInheritedTargetAddress(deploymentModel);
 note = Simulink.Annotation(deploymentModel, [ ...
-    'HPVC standalone receiver. LKAS Enable defaults to false. ' ...
-    'TC375 UDP sends EmergencyCenter only until LKAS is explicitly enabled.']);
+    'HPVC standalone receiver. LKAS Enable defaults to true for real steering. ' ...
+    'TC375 UDP sends SteeringValid only while MIDDLE link/lane are valid.']);
 note.Position = [35 690 1060 725];
 save_system(deploymentModel, deploymentFile);
 close_system(deploymentModel, 0);
 fprintf('Created %s\n', deploymentFile);
+end
+
+function setDeploymentSteeringEnable(model, enabled)
+if enabled
+    value = 'true';
+else
+    value = 'false';
+end
+set_param([model '/LKAS Enable'], 'Value', value);
 end
 
 function clearInheritedTargetAddress(model)

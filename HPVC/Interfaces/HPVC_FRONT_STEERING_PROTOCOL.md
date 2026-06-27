@@ -44,8 +44,9 @@ set both bits. A receiver must still choose center if both arrive set.
 
 HPVC sets `SteeringValid` only when LKAS is enabled, upstream control is valid,
 and the angle is finite and within the configured limit. Otherwise it sends angle
-`0`, clears `SteeringValid`, and sets `EmergencyCenter`. HPVC starts with LKAS
-disabled, so connecting the network alone cannot authorize servo movement.
+`0`, clears `SteeringValid`, and sets `EmergencyCenter`. The current HPVC
+deployment model starts with LKAS enabled for real steering tests, so a fresh
+valid MIDDLE lane/control path can authorize servo movement.
 
 ## TC375 receiver rules
 
@@ -62,6 +63,6 @@ center mode when no accepted new Sequence arrives for `0.20 s`, when a packet is
 invalid, or when `EmergencyCenter=1`. The HPVC timestamp is diagnostic only because
 the two devices do not share a monotonic-clock epoch.
 
-Until the servo is physically installed and center/direction calibration is
-complete, the TC375 application must keep its PWM output disabled. Decoder tests
-do not authorize actuator output.
+The TC375 application drives the calibrated PWM output only after a valid HPSC
+command passes all receiver checks. Decoder tests do not authorize actuator
+output by themselves.
