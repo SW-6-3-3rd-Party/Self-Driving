@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Side-ultrasonic gated LCA steering test for HPVC.
 
-This is a temporary side-only LCA actuator test. It reads MIDDLE metrics,
-checks the requested side ultrasonic distance, then sends the HPVC steering
-command directly to the front TC375.
+This is a temporary side-only LCA actuator test. It reads gate sensor values
+from JSON/HTTP, checks the requested side ultrasonic clearance, then sends the
+HPVC steering command directly to the front TC375.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from pathlib import Path
 import socket
 import struct
 import subprocess
@@ -120,32 +121,93 @@ def probe_diagnostic_roundtrip(
         sock.close()
 
 
-def fetch_metrics(url: str, timeout_s: float) -> dict:
-    with urllib.request.urlopen(url, timeout=timeout_s) as response:
-        return json.loads(response.read().decode("utf-8"))
+def fetch_json_source(url: str | None, file_path: str | None, timeout_s: float) -> dict:
+    if file_path:
+        return json.loads(Path(file_path).read_text(encoding="utf-8"))
+    if url:
+        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+            return json.loads(response.read().decode("utf-8"))
+    return {}
 
 
-def read_side_distance(args: argparse.Namespace) -> tuple[float | None, bool]:
-    if args.skip_sensor_check:
-        return None, True
-    if args.side_distance is not None:
-        return args.side_distance, math.isfinite(args.side_distance)
-
-    metrics = fetch_metrics(args.middle_metrics_url, args.http_timeout_s)
-    if args.direction == "left":
-        distance = metrics.get("left_ultrasonic_m")
-        valid = bool(metrics.get("left_ultrasonic_valid"))
-    else:
-        distance = metrics.get("right_ultrasonic_m")
-        valid = bool(metrics.get("right_ultrasonic_valid"))
-
-    if distance is None:
+def _coerce_distance(value) -> tuple[float | None, bool]:
+    if value is None:
         return None, False
     try:
-        distance_f = float(distance)
+        distance = float(value)
     except (TypeError, ValueError):
         return None, False
-    return distance_f, valid and math.isfinite(distance_f)
+    return distance, math.isfinite(distance)
+
+
+def _resolve_first(metrics: dict, keys: list[str]) -> tuple[float | None, bool, str | None]:
+    for key in keys:
+        if key in metrics:
+            distance, valid = _coerce_distance(metrics.get(key))
+            if distance is not None:
+                return distance, valid, key
+    return None, False, None
+
+
+def read_gate_distances(
+    args: argparse.Namespace,
+) -> tuple[dict[str, tuple[float | None, bool, str | None]], bool, str]:
+    if args.skip_sensor_check:
+        return {}, True, "skipped"
+
+    if args.gate_distance is not None:
+        distance = float(args.gate_distance)
+        return {
+            "rear": (distance, math.isfinite(distance), "manual"),
+            "middle": (distance, math.isfinite(distance), "manual"),
+            "front": (distance, math.isfinite(distance), "manual"),
+        }, math.isfinite(distance), "manual"
+
+    metrics = fetch_json_source(args.gate_source_url, args.gate_source_file, args.http_timeout_s)
+    if not metrics:
+        return {}, False, "empty"
+
+    side = args.direction.lower()
+    prefix = "left" if side == "left" else "right"
+    gates = {
+        "rear": [
+            f"rear_{prefix}_m",
+            f"rear_{prefix}_distance_m",
+            f"rear_{prefix}_ultrasonic_m",
+            f"{prefix}_rear_m",
+            f"{prefix}_rear_distance_m",
+        ],
+        "middle": [
+            f"middle_{prefix}_m",
+            f"middle_{prefix}_distance_m",
+            f"{prefix}_middle_m",
+            f"{prefix}_middle_distance_m",
+            f"{prefix}_ultrasonic_m",
+            f"{prefix}_ultrasonic_distance_m",
+        ],
+        "front": [
+            f"front_{prefix}_m",
+            f"front_{prefix}_distance_m",
+            f"front_{prefix}_diag_distance_m",
+            f"{prefix}_front_m",
+            f"{prefix}_front_distance_m",
+            f"side_{prefix}_distance_m",
+        ],
+    }
+    compatibility_keys = [
+        f"{prefix}_ultrasonic_m",
+        f"{prefix}_ultrasonic_distance_m",
+    ]
+
+    resolved = {}
+    ok = True
+    for name, keys in gates.items():
+        distance, valid, source_key = _resolve_first(metrics, keys)
+        if distance is None:
+            distance, valid, source_key = _resolve_first(metrics, compatibility_keys)
+        resolved[name] = (distance, valid, source_key)
+        ok = ok and valid and distance is not None
+    return resolved, ok, "metrics"
 
 
 def stop_hpvc_deployment() -> None:
@@ -195,10 +257,16 @@ def send_profile(args: argparse.Namespace) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a side-only LCA steering test")
     parser.add_argument("direction", choices=("left", "right"))
-    parser.add_argument("--middle-metrics-url", default="http://192.168.202.104:8000/metrics.json")
+    parser.add_argument("--gate-source-url", default="http://192.168.202.104:8000/metrics.json")
+    parser.add_argument("--gate-source-file", default=None, help="Read gate distances from a local JSON file")
     parser.add_argument("--http-timeout-s", type=float, default=1.0)
     parser.add_argument("--min-side-distance-m", type=float, default=0.35)
-    parser.add_argument("--side-distance", type=float, default=None, help="Use a manual distance instead of MIDDLE HTTP")
+    parser.add_argument(
+        "--gate-distance",
+        type=float,
+        default=None,
+        help="Use a manual distance for all three gate positions",
+    )
     parser.add_argument("--skip-sensor-check", action="store_true", help="Send steering without checking ultrasonic distance")
     parser.add_argument("--tc375-host", default="192.168.10.2")
     parser.add_argument("--tc375-port", type=int, default=5100)
@@ -209,9 +277,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--center-seconds", type=float, default=0.7)
     parser.add_argument("--hz", type=float, default=20.0)
     parser.add_argument(
-<<<<<<< HEAD:HPVC/lca_side_only.py
-        "--stop-hpvc-deployment",
-=======
         "--verify-roundtrip",
         action="store_true",
         help="Probe the R1DG diagnostic echo path before sending steering packets",
@@ -220,8 +285,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--diagnostic-port", type=int, default=5010)
     parser.add_argument("--roundtrip-timeout-s", type=float, default=1.0)
     parser.add_argument(
-        "--stop-rpi1-deployment",
->>>>>>> 951cd7e9bc5caa71f7dfd4bd77623e64cc167d9b:HPVC/RPI1/lca_side_only.py
+        "--stop-hpvc-deployment",
         action="store_true",
         help="Stop HPVCDeployment.elf before sending this direct test command",
     )
@@ -238,28 +302,34 @@ def main(argv: list[str] | None = None) -> int:
 
     direction_sign = 1.0 if args.direction == "left" else -1.0
 
-    distance, valid = read_side_distance(args)
+    gate_distances, gate_ok, gate_source = read_gate_distances(args)
     if args.skip_sensor_check:
         print("sensor_check=SKIPPED")
     else:
-        print(f"{args.direction}_ultrasonic distance_m={distance} valid={valid}")
-        if not valid:
-            print("LCA blocked: ultrasonic value is invalid")
+        if not gate_distances:
+            print("LCA blocked: no gate sensor data available")
             return 2
-        if distance is None or distance < args.min_side_distance_m:
-            print(
-                "LCA blocked: side gap is too small "
-                f"({distance:.3f}m < {args.min_side_distance_m:.3f}m)"
-            )
-            return 3
+        for name in ("rear", "middle", "front"):
+            distance, valid, source_key = gate_distances.get(name, (None, False, None))
+            print(f"{args.direction}_{name} distance_m={distance} valid={valid} source={source_key}")
+            if not valid:
+                print(f"LCA blocked: {name} gate ultrasonic value is invalid")
+                return 2
+            if distance is None or distance < args.min_side_distance_m:
+                value_text = "nan" if distance is None else f"{distance:.3f}"
+                print(
+                    f"LCA blocked: {name} gate gap is too small "
+                    f"({value_text}m < {args.min_side_distance_m:.3f}m)"
+                )
+                return 3
 
     if args.verify_roundtrip:
         roundtrip_ok, elapsed_ms = probe_diagnostic_roundtrip(
             args=args,
             packet_valid=True,
-            link_valid=valid,
+            link_valid=gate_ok,
             control_valid=True,
-            rpi2_flags=0x0F if valid else 0x00,
+            rpi2_flags=0x0F if gate_ok else 0x00,
             steering_rad=direction_sign * abs(args.angle_rad),
         )
         if not roundtrip_ok:
