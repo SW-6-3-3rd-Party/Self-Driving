@@ -10,6 +10,36 @@ import zlib
 
 
 PACKET_SIZE = 40
+MAGIC = b"R1DG"
+VERSION = 1
+HEADER_SIZE = 32
+
+
+def encode_packet(
+    packet_valid: bool,
+    link_valid: bool,
+    control_valid: bool,
+    rpi2_flags: int,
+    sequence: int,
+    packet_age_s: float,
+    steering_rad: float,
+    rpi1_time_s: float,
+) -> bytes:
+    payload = bytearray(PACKET_SIZE)
+    payload[0:4] = MAGIC
+    payload[4] = VERSION
+    status = (1 if packet_valid else 0)
+    status |= (1 if link_valid else 0) << 1
+    status |= (1 if control_valid else 0) << 2
+    payload[5] = status & 0xFF
+    payload[6] = rpi2_flags & 0xFF
+    payload[7] = HEADER_SIZE
+    struct.pack_into("<I", payload, 8, sequence & 0xFFFFFFFF)
+    struct.pack_into("<d", payload, 12, float(packet_age_s))
+    struct.pack_into("<f", payload, 20, float(steering_rad))
+    struct.pack_into("<d", payload, 24, float(rpi1_time_s))
+    struct.pack_into("<I", payload, 36, zlib.crc32(payload[:36]) & 0xFFFFFFFF)
+    return bytes(payload)
 
 
 def decode_packet(data: bytes) -> dict[str, object]:
@@ -41,6 +71,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=5010)
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--count", type=int, default=0, help="Exit after printing N samples")
+    parser.add_argument(
+        "--echo-back",
+        action="store_true",
+        help="Echo valid diagnostic packets back to the sender for roundtrip probing",
+    )
     args = parser.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -61,6 +96,11 @@ def main() -> None:
         except ValueError as error:
             print(f"Rejected packet from {address[0]}: {error}")
             continue
+        if args.echo_back:
+            try:
+                sock.sendto(data, address)
+            except OSError as error:
+                print(f"Echo failed to {address[0]}: {error}")
         now = time.monotonic()
         if now - last_print >= 0.25:
             print(f"{address[0]}: {values}", flush=True)
