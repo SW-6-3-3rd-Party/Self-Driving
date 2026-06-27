@@ -14,6 +14,7 @@ configureRpi1Target.m     RPi #1 전용 IP와 사용자 설정
 rpi2DecodePacket.m        RPi #2의 80바이트 UDP 패킷 검증·해석
 rpi2LinkMonitor.m         Sequence 및 RPi #1 로컬 시간 기반 watchdog
 tc375EncodeSteeringPacket.m Front TC375 40바이트 조향 패킷 인코더
+diagnostic_receiver.py   R1DG 진단 수신 및 선택적 echo-back 서버
 Models/                   RPi #1 수신 및 향후 배포용 Simulink 모델
 tests/                    Python 송신기와 MATLAB 수신기의 계약 시험
 ```
@@ -40,6 +41,10 @@ RPi UDP Receive
 -> RCCarAutonomousSystem
 -> TC375 UDP Send
 ```
+
+`left.py` / `right.py`는 `--verify-roundtrip` 옵션과 `diagnostic_receiver.py
+--echo-back` 조합으로 UDP 왕복 경로를 먼저 검증할 수 있다. 이 경로는
+`R1DG` 진단 패킷을 재사용한다.
 
 Raspberry Pi Blockset 26.1이 설치되어 있으며 배포 모델도 생성되어 있다.
 제어 코어의 portable C 코드는 다음과 같이 별도로 생성할 수 있다.
