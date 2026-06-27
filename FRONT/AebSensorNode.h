@@ -2,7 +2,7 @@
  * AEB sensor Ethernet node for TC375
  *
  * Reads two HC-SR04-style ultrasonic sensors and one front VL53L0X-compatible ToF sensor, filters them to centimeters,
- * and sends the latest values as a UDP broadcast frame over GETH.
+ * sends the latest values as a UDP AEB1 frame over GETH, and shares the GETH RX buffers with the steering receiver.
  *********************************************************************************************************************/
 #ifndef AEB_SENSOR_NODE_H_
 #define AEB_SENSOR_NODE_H_
@@ -21,13 +21,13 @@
 
 /* GPIO assignment using the requested nearby pins. */
 #define AEB_ULTRA_LEFT_TRIG_PORT            (&MODULE_P02)
-#define AEB_ULTRA_LEFT_TRIG_PIN             (3u)
+#define AEB_ULTRA_LEFT_TRIG_PIN             (7u)
 #define AEB_ULTRA_LEFT_ECHO_PORT            (&MODULE_P10)
-#define AEB_ULTRA_LEFT_ECHO_PIN             (4u)
+#define AEB_ULTRA_LEFT_ECHO_PIN             (5u)
 #define AEB_ULTRA_RIGHT_TRIG_PORT           (&MODULE_P02)
 #define AEB_ULTRA_RIGHT_TRIG_PIN            (1u)
-#define AEB_ULTRA_RIGHT_ECHO_PORT           (&MODULE_P02)
-#define AEB_ULTRA_RIGHT_ECHO_PIN            (0u)
+#define AEB_ULTRA_RIGHT_ECHO_PORT           (&MODULE_P10)
+#define AEB_ULTRA_RIGHT_ECHO_PIN            (4u)
 
 /* ToF I2C. The minimal built-in reader targets VL53L0X-compatible modules at the same 0x29 address as aeb.py. */
 #define AEB_TOF_XSHUT_ENABLED               (1u)
@@ -50,7 +50,7 @@
 #define AEB_TOF_MEASURE_TIMEOUT_MS          (100u)
 #define AEB_TOF_DISTANCE_SCALE              (0.5f)  /* Keep the Raspberry Pi aeb.py TOF_DISTANCE_SCALE calibration. */
 
-/* Ethernet/IP/UDP broadcast settings. Listen on UDP port 5005. */
+/* Ethernet/IP/UDP settings for FRONT -> HPVC AEB1 sensor packets. */
 #define AEB_ETH_SRC_MAC0                    (0x02u)
 #define AEB_ETH_SRC_MAC1                    (0x37u)
 #define AEB_ETH_SRC_MAC2                    (0x50u)

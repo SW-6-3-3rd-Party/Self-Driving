@@ -29,6 +29,7 @@
 #include "IfxScuWdt.h"
 #include "Ifx_Cfg_Ssw.h"
 #include "AebSensorNode.h"
+#include "FrontSteeringNode.h"
 
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 
@@ -46,10 +47,13 @@ void core0_main(void)
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
 
+    FrontSteeringNode_init();
     AebSensorNode_init();
     
     while(1)
     {
+        FrontSteeringNode_runOnce();
         AebSensorNode_runOnce();
+        FrontSteeringNode_runOnce();
     }
 }

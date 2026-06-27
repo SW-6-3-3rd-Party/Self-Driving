@@ -1,4 +1,5 @@
 #include "AebSensorNode.h"
+#include "FrontSteeringNode.h"
 
 #include <string.h>
 
@@ -30,6 +31,11 @@
 #define AEB_TOF_DIAG_RANGE_READ_FAIL          (0xB4u)
 #define AEB_TOF_DIAG_RANGE_OUT_OF_LIMIT       (0xB5u)
 
+#define AEB_ULTRA_DIAG_OK                     (0x0000u)
+#define AEB_ULTRA_DIAG_NO_ECHO_RISE           (0xF001u)
+#define AEB_ULTRA_DIAG_NO_ECHO_FALL           (0xF002u)
+#define AEB_ULTRA_DIAG_RANGE_OUT_OF_LIMIT     (0xF003u)
+
 #define VL53L0X_SYSRANGE_START                (0x00u)
 #define VL53L0X_SYSTEM_SEQUENCE_CONFIG        (0x01u)
 #define VL53L0X_SYSTEM_INTERRUPT_CONFIG_GPIO  (0x0Au)
@@ -53,6 +59,8 @@ typedef struct
     uint8   sampleIndex;
     uint16  filteredCmX10;
     uint32  lastValidTick;
+    uint16  lastRawCmX10;
+    uint16  lastDiag;
 } AebUltrasonicSensor;
 
 static AebUltrasonicSensor g_leftUltrasonic = {
@@ -61,6 +69,8 @@ static AebUltrasonicSensor g_leftUltrasonic = {
     AEB_ULTRA_LEFT_ECHO_PORT,
     AEB_ULTRA_LEFT_ECHO_PIN,
     {0u, 0u, 0u},
+    0u,
+    0u,
     0u,
     0u,
     0u,
@@ -73,6 +83,8 @@ static AebUltrasonicSensor g_rightUltrasonic = {
     AEB_ULTRA_RIGHT_ECHO_PORT,
     AEB_ULTRA_RIGHT_ECHO_PIN,
     {0u, 0u, 0u},
+    0u,
+    0u,
     0u,
     0u,
     0u,
@@ -258,6 +270,8 @@ static void aeb_ultrasonicInit(AebUltrasonicSensor *sensor)
 static boolean aeb_ultrasonicReadCmX10(AebUltrasonicSensor *sensor, uint16 *cmX10)
 {
     uint32 pulseTicks;
+    sensor->lastRawCmX10 = 0u;
+    sensor->lastDiag = AEB_ULTRA_DIAG_OK;
 
     IfxPort_setPinLow(sensor->trigPort, sensor->trigPin);
     aeb_delayUs(2u);
@@ -267,21 +281,25 @@ static boolean aeb_ultrasonicReadCmX10(AebUltrasonicSensor *sensor, uint16 *cmX1
 
     if (!aeb_waitPinState(sensor->echoPort, sensor->echoPin, TRUE, AEB_ULTRA_ECHO_TIMEOUT_US, NULL_PTR))
     {
+        sensor->lastDiag = AEB_ULTRA_DIAG_NO_ECHO_RISE;
         return FALSE;
     }
 
     uint32 pulseStart = aeb_nowTicks();
     if (!aeb_waitPinState(sensor->echoPort, sensor->echoPin, FALSE, AEB_ULTRA_ECHO_TIMEOUT_US, NULL_PTR))
     {
+        sensor->lastDiag = AEB_ULTRA_DIAG_NO_ECHO_FALL;
         return FALSE;
     }
     pulseTicks = aeb_nowTicks() - pulseStart;
 
     uint32 pulseUs = aeb_ticksToUs(pulseTicks);
     uint32 distanceCmX10 = (pulseUs * 1715u + 5000u) / 10000u;
+    sensor->lastRawCmX10 = (distanceCmX10 > 0xFFFFu) ? 0xFFFFu : (uint16)distanceCmX10;
 
     if ((distanceCmX10 < AEB_ULTRA_MIN_CM_X10) || (distanceCmX10 > AEB_ULTRA_MAX_CM_X10))
     {
+        sensor->lastDiag = AEB_ULTRA_DIAG_RANGE_OUT_OF_LIMIT;
         return FALSE;
     }
 
@@ -1069,6 +1087,28 @@ static void aeb_sendFrame(const AebSensorNode_Frame *frame)
     IfxGeth_dma_clearInterruptFlag(g_geth.gethSFR, IfxGeth_DmaChannel_0, IfxGeth_DmaInterruptFlag_transmitInterrupt);
 }
 
+static boolean aeb_rxLooksLikeIpv4Udp(const uint8 *frame)
+{
+    return frame[12] == 0x08u &&
+        frame[13] == 0x00u &&
+        (frame[14] >> 4) == 4u &&
+        frame[23] == 17u;
+}
+
+static void aeb_pollSteeringRx(void)
+{
+    uint32 nowMs = aeb_ticksToMs(aeb_nowTicks());
+
+    for (uint32 index = 0u; index < IFXGETH_MAX_RX_DESCRIPTORS; index++)
+    {
+        uint8 *rxBuffer = &g_ethRxBuffer[index * AEB_ETH_RX_BUFFER_SIZE];
+        if (aeb_rxLooksLikeIpv4Udp(rxBuffer))
+        {
+            (void)FrontSteeringNode_acceptEthernetFrame(rxBuffer, AEB_ETH_RX_BUFFER_SIZE, nowMs);
+        }
+    }
+}
+
 void AebSensorNode_init(void)
 {
     memset(&g_latestFrame, 0, sizeof(g_latestFrame));
@@ -1087,6 +1127,8 @@ void AebSensorNode_init(void)
 
 void AebSensorNode_runOnce(void)
 {
+    aeb_pollSteeringRx();
+
     boolean leftValid = aeb_ultrasonicUpdate(&g_leftUltrasonic);
     aeb_delayUs(AEB_ULTRA_CROSSTALK_DELAY_US);
     boolean rightValid = aeb_ultrasonicUpdate(&g_rightUltrasonic);
@@ -1095,8 +1137,10 @@ void AebSensorNode_runOnce(void)
     g_latestFrame.sequence++;
     g_latestFrame.timestampMs = aeb_ticksToMs(aeb_nowTicks());
     g_latestFrame.tofFrontCmX10 = g_tofCmX10;
-    g_latestFrame.ultrasonicLeftCmX10 = g_leftUltrasonic.filteredCmX10;
-    g_latestFrame.ultrasonicRightCmX10 = g_rightUltrasonic.filteredCmX10;
+    g_latestFrame.ultrasonicLeftCmX10 = leftValid ?
+        g_leftUltrasonic.filteredCmX10 : g_leftUltrasonic.lastDiag;
+    g_latestFrame.ultrasonicRightCmX10 = rightValid ?
+        g_rightUltrasonic.filteredCmX10 : g_rightUltrasonic.lastDiag;
     g_latestFrame.tofDiag = g_tofDiag;
     g_latestFrame.validMask = 0u;
 
@@ -1116,6 +1160,7 @@ void AebSensorNode_runOnce(void)
     }
 
     aeb_sendFrame(&g_latestFrame);
+    aeb_pollSteeringRx();
 
     if (!g_tofPresent && (g_latestFrame.sequence >= AEB_TOF_INIT_DELAY_FRAMES))
     {
