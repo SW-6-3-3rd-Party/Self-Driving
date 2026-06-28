@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import atexit
 from dataclasses import asdict, dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import socket
 import struct
 import threading
@@ -394,9 +396,87 @@ update();
 """
 
 
+class FallbackHttpApp:
+    """Small stdlib HTTP fallback for Raspberry Pi systems without Flask."""
+
+    def __init__(self, controller: HpvcRemoteController) -> None:
+        self.controller = controller
+
+    def run(self, *, host: str, port: int, threaded: bool = True) -> None:
+        controller = self.controller
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                path = self.path.split("?", 1)[0]
+                if path == "/":
+                    self._send_bytes(200, INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                    return
+                if path == "/api/status":
+                    self._send_json(200, controller.snapshot())
+                    return
+                self.send_error(404)
+
+            def do_POST(self) -> None:  # noqa: N802
+                path = self.path.split("?", 1)[0]
+                payload = self._read_json()
+                if path == "/api/control":
+                    self._send_json(
+                        200,
+                        controller.command(
+                            drive_command=payload.get("drive_command"),
+                            steering_command=payload.get("steering_command"),
+                            target_speed_mps=payload.get("target_speed_mps"),
+                            emergency_stop=False,
+                        ),
+                    )
+                    return
+                if path == "/api/stop":
+                    self._send_json(200, controller.stop(clear_emergency=True))
+                    return
+                if path == "/api/estop":
+                    self._send_json(200, controller.command(emergency_stop=True))
+                    return
+                if path == "/api/reset":
+                    self._send_json(200, controller.stop(clear_emergency=True))
+                    return
+                self.send_error(404)
+
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+            def _read_json(self) -> dict[str, Any]:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    return {}
+                return payload if isinstance(payload, dict) else {}
+
+            def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+                data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                self._send_bytes(status, data, "application/json")
+
+            def _send_bytes(self, status: int, data: bytes, content_type: str) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        print("Flask is not installed; using built-in HTTP fallback.")
+        server = ThreadingHTTPServer((host, port), Handler)
+        try:
+            server.serve_forever(poll_interval=0.2)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+
+
 def create_app(controller: HpvcRemoteController):
     if Flask is None:
-        raise RuntimeError("Flask is not installed. Install it with: python3 -m pip install flask")
+        return FallbackHttpApp(controller)
 
     app = Flask(__name__)
 
