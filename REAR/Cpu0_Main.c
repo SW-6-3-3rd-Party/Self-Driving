@@ -21,6 +21,16 @@ typedef struct {
     float i_term;
 } TelemFrame;
 
+typedef struct {
+    float rear_left_m;
+    float rear_right_m;
+    float vehicle_speed_mps;
+    uint8 valid_mask;
+    uint8 motor_state;
+    uint8 alive_count;
+    uint8 reserved;
+} RearHpvcStatusFrame;
+
 extern volatile float g_speed_buf[2];
 extern volatile uint8 g_speed_idx;
 
@@ -118,15 +128,20 @@ void core0_main(void)
 
             TelemFrame tf;
             Cpu0_ReadTelem(&tf);
-            UdpSendToPC(5001, &tf, sizeof(TelemFrame));
+//            UdpSendToPC(5001, &tf, sizeof(TelemFrame));
 
             AebUltraLmuFrame u;
             Cpu0_ReadUltra(&u);
 
-            float32 dist[2];
-            dist[0] = u.left;
-            dist[1] = u.right;
-            UdpSendToPC(5002, &dist, sizeof(dist));
+            RearHpvcStatusFrame rear;
+            rear.rear_left_m = u.left;
+            rear.rear_right_m = u.right;
+            rear.vehicle_speed_mps = tf.v_meas;
+            rear.valid_mask = u.validMask;
+            rear.motor_state = 2u;
+            rear.alive_count = ultra_alive++ & 0x0Fu;
+            rear.reserved = 0u;
+            UdpSendToPC(5012, &rear, sizeof(rear));
         }
 
     }

@@ -11,11 +11,13 @@
 #if LWIP_UDP
 
 #define CTR_PORT 5000
+#define HPVC_REAR_COMMAND_PORT 5110
 #define DOIP_PORT 13400
 #define SOMEIP_PORT 30492
 
 static struct udp_pcb *udp_send_pcb;
 static struct udp_pcb *udp_ctr_pcb;
+static struct udp_pcb *udp_hpvcrear_pcb;
 static struct udp_pcb *udp_doip_pcb;
 static struct udp_pcb *udp_someip_pcb;
 
@@ -25,10 +27,12 @@ static u16_t     someip_port;
 
 extern void Cpu0_WriteAcc(float new_acc);
 
-static void udp_receive_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
-                             const ip_addr_t *addr, u16_t port)
+static void udp_receive_acc_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
+                                 const ip_addr_t *addr, u16_t port)
 {
     LWIP_UNUSED_ARG(arg);
+    LWIP_UNUSED_ARG(upcb);
+    LWIP_UNUSED_ARG(port);
 
     if (p != NULL)
     {
@@ -59,6 +63,19 @@ static void udp_receive_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
     }
 }
 
+static void udp_drop_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
+                          const ip_addr_t *addr, u16_t port)
+{
+    LWIP_UNUSED_ARG(arg);
+    LWIP_UNUSED_ARG(upcb);
+    LWIP_UNUSED_ARG(addr);
+    LWIP_UNUSED_ARG(port);
+
+    if (p != NULL) {
+        pbuf_free(p);
+    }
+}
+
 static err_t UdpSend_WithPcb(struct udp_pcb *pcb, const ip_addr_t *dst_addr, u16_t dst_port, const void *data, u16_t len)
 {
     if (pcb == NULL || dst_addr == NULL || data == NULL || len == 0) return ERR_ARG;
@@ -82,7 +99,7 @@ err_t UdpSendToPC(u16_t dst_port, const void *data, u16_t len) {
 /* [ID: 5002] RPi로 전송 (하드코딩된 IP 사용, 목적지 포트는 5002) */
 err_t UdpSendToRPi(u16_t dst_port, const void *data, u16_t len) {
     ip_addr_t rpi_ip;
-    IP4_ADDR(&rpi_ip, 192, 168, 20, 2);
+    IP4_ADDR(&rpi_ip, 192, 168, 10, 1);
     // 일반 송신용 PCB 사용
     return UdpSend_WithPcb(udp_send_pcb, &rpi_ip, dst_port, data, len);
 }
@@ -97,6 +114,7 @@ void UdpInit(void)
 {
     //송신 전용
     udp_send_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
+    IP4_ADDR(&pcip, 192, 168, 10, 1);
 
 
     udp_ctr_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
@@ -104,7 +122,16 @@ void UdpInit(void)
         err_t err;
         err = udp_bind(udp_ctr_pcb, IP_ANY_TYPE, CTR_PORT);
         if (err == ERR_OK) {
-            udp_recv(udp_ctr_pcb, udp_receive_recv, NULL);
+            udp_recv(udp_ctr_pcb, udp_receive_acc_recv, NULL);
+        }
+    }
+
+    udp_hpvcrear_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
+    if (udp_hpvcrear_pcb != NULL) {
+        err_t err;
+        err = udp_bind(udp_hpvcrear_pcb, IP_ANY_TYPE, HPVC_REAR_COMMAND_PORT);
+        if (err == ERR_OK) {
+            udp_recv(udp_hpvcrear_pcb, udp_receive_acc_recv, NULL);
         }
     }
 
@@ -113,7 +140,7 @@ void UdpInit(void)
         err_t err;
         err = udp_bind(udp_doip_pcb, IP_ANY_TYPE, DOIP_PORT);
         if (err == ERR_OK) {
-            udp_recv(udp_doip_pcb, udp_receive_recv, NULL);
+            udp_recv(udp_doip_pcb, udp_drop_recv, NULL);
         }
     }
 
@@ -122,7 +149,7 @@ void UdpInit(void)
         err_t err;
         err = udp_bind(udp_someip_pcb, IP_ANY_TYPE, SOMEIP_PORT);
         if (err == ERR_OK) {
-            udp_recv(udp_someip_pcb, udp_receive_recv, NULL);
+            udp_recv(udp_someip_pcb, udp_drop_recv, NULL);
         }
     }
 }
