@@ -31,14 +31,26 @@ typedef struct {
     uint8 reserved;
 } RearHpvcStatusFrame;
 
+/* CPU0 -> CPU1 : 주행 명령 묶음 (control_mode ~ emergency_stop) */
+typedef struct {
+    uint8 control_mode;     /* 0 MANUAL, 1 ACC, 2 AEB */
+    uint8 drive_direction;  /* 0 STOP, 1 FWD, 2 REV   */
+    float target_speed;     /* m/s, 항상 양수 크기 */
+    float accel_cmd;        /* m/s^2, ACC용 */
+    uint8 emergency_stop;   /* 0/1 */
+} DriveCmd;
+
 extern volatile float g_speed_buf[2];
 extern volatile uint8 g_speed_idx;
 
-extern volatile float g_acc_buf[2];
-extern volatile uint8 g_acc_idx;
+/* CPU0 -> CPU1 : 주행 명령 묶음 */
+extern volatile DriveCmd g_drivecmd_buf[2];
+extern volatile uint8    g_drivecmd_idx;
 
 extern volatile TelemFrame g_telem_buf[2];
 extern volatile uint8      g_telem_idx;
+
+
 
 /* g_ultra_buf / g_ultra_idx 는 AebSensorNode.h 의 extern 선언 사용 */
 
@@ -76,16 +88,21 @@ void Cpu0_ReadUltra(AebUltraLmuFrame* out)
     out->validMask = nc_f->validMask;
 }
 
-void Cpu0_WriteAcc(float new_acc) {
-    volatile uint8* nc_idx_ptr = (volatile uint8*)NON_CACHED(&g_acc_idx);
-    uint8 current_idx = *nc_idx_ptr;
-    uint8 write_idx = 1 - current_idx;
-    volatile float* nc_acc_buf = (volatile float*)NON_CACHED(&g_acc_buf[write_idx]);
-    *nc_acc_buf = new_acc;
-    __dsync();
-    *nc_idx_ptr = write_idx;
-}
+void Cpu0_WriteDriveCmd(const DriveCmd* c)
+{
+    volatile uint8* nc_idx = (volatile uint8*)NON_CACHED(&g_drivecmd_idx);
+    uint8 w = 1 - *nc_idx;
+    volatile DriveCmd* nc = (volatile DriveCmd*)NON_CACHED(&g_drivecmd_buf[w]);
 
+    nc->control_mode    = c->control_mode;
+    nc->drive_direction = c->drive_direction;
+    nc->target_speed    = c->target_speed;
+    nc->accel_cmd       = c->accel_cmd;
+    nc->emergency_stop  = c->emergency_stop;
+
+    __dsync();
+    *nc_idx = w;
+}
 
 
 /* -------------------------------------------------------------
@@ -128,7 +145,7 @@ void core0_main(void)
 
             TelemFrame tf;
             Cpu0_ReadTelem(&tf);
-//            UdpSendToPC(5001, &tf, sizeof(TelemFrame));
+            UdpSendToPC(5001, &tf, sizeof(TelemFrame));
 
             AebUltraLmuFrame u;
             Cpu0_ReadUltra(&u);
