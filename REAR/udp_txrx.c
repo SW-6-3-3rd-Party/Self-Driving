@@ -10,6 +10,15 @@
 
 #if LWIP_UDP
 
+/* CPU0 -> CPU1 : 주행 명령 묶음 (control_mode ~ emergency_stop) */
+typedef struct {
+    uint8 control_mode;     /* 0 MANUAL, 1 ACC, 2 AEB */
+    uint8 drive_direction;  /* 0 STOP, 1 FWD, 2 REV   */
+    float target_speed;     /* m/s, 항상 양수 크기 */
+    float accel_cmd;        /* m/s^2, ACC용 */
+    uint8 emergency_stop;   /* 0/1 */
+} DriveCmd;
+
 #define CTR_PORT 5000
 #define HPVC_REAR_COMMAND_PORT 5110
 #define DOIP_PORT 13400
@@ -24,8 +33,7 @@ static struct udp_pcb *udp_someip_pcb;
 static ip_addr_t pcip;
 static u16_t     someip_port;
 
-
-extern void Cpu0_WriteAcc(float new_acc);
+extern void Cpu0_WriteDriveCmd(const DriveCmd* c);
 
 static void udp_receive_acc_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
                                  const ip_addr_t *addr, u16_t port)
@@ -34,33 +42,25 @@ static void udp_receive_acc_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p
     LWIP_UNUSED_ARG(upcb);
     LWIP_UNUSED_ARG(port);
 
-    if (p != NULL)
-    {
-        if (addr != NULL)
-        {
-            ip_addr_copy(pcip, *addr);
-        }
+    if (p == NULL)
+        return;
 
-        /* 4바이트(float) 수신 확인 — tot_len 기준 (chained pbuf 대응) */
-        if (p->tot_len >= sizeof(float))
-        {
-            uint8_t raw[4];
-            float received_acc;
+    if (addr != NULL)
+        ip_addr_copy(pcip, *addr);
 
-            /* payload를 안전하게 복사 (정렬/분할 pbuf 문제 회피) */
-            pbuf_copy_partial(p, raw, sizeof(raw), 0);
+    uint8 buf[32] __attribute__((aligned(4)));
+    pbuf_copy_partial(p, buf, sizeof(buf), 0);
 
-            /* PC(x86)와 TC375 모두 little-endian -> 바이트 스왑 없이 그대로 복사.
-             * (PC 송신부가 빅엔디안/네트워크 바이트오더로 보낸다면, 그때만 스왑) */
-            memcpy(&received_acc, raw, sizeof(float));
+    DriveCmd cmd;
+    cmd.control_mode    = buf[16];
+    cmd.drive_direction = buf[17];
+    memcpy(&cmd.target_speed, buf + 20, sizeof(float));
+    memcpy(&cmd.accel_cmd,    buf + 24, sizeof(float));
+    cmd.emergency_stop  = buf[28];
 
-            /* 더블 버퍼링 알고리즘이 적용된 함수로 안전하게 대입 */
-            Cpu0_WriteAcc(received_acc);
+    Cpu0_WriteDriveCmd(&cmd);
 
-        }
-
-        pbuf_free(p);
-    }
+    pbuf_free(p);
 }
 
 static void udp_drop_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
