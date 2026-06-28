@@ -1098,13 +1098,22 @@ static boolean aeb_rxLooksLikeIpv4Udp(const uint8 *frame)
 static void aeb_pollSteeringRx(void)
 {
     uint32 nowMs = aeb_ticksToMs(aeb_nowTicks());
+    uint32 guard = 0u;
 
-    for (uint32 index = 0u; index < IFXGETH_MAX_RX_DESCRIPTORS; index++)
+    while (IfxGeth_Eth_isRxDataAvailable(&g_geth, IfxGeth_RxDmaChannel_0) != FALSE)
     {
-        uint8 *rxBuffer = &g_ethRxBuffer[index * AEB_ETH_RX_BUFFER_SIZE];
-        if (aeb_rxLooksLikeIpv4Udp(rxBuffer))
+        uint8 *rxBuffer = (uint8 *)IfxGeth_Eth_getReceiveBuffer(&g_geth, IfxGeth_RxDmaChannel_0);
+        if (rxBuffer != 0 && aeb_rxLooksLikeIpv4Udp(rxBuffer))
         {
             (void)FrontSteeringNode_acceptEthernetFrame(rxBuffer, AEB_ETH_RX_BUFFER_SIZE, nowMs);
+        }
+
+        IfxGeth_Eth_freeReceiveBuffer(&g_geth, IfxGeth_RxDmaChannel_0);
+
+        guard++;
+        if (guard >= IFXGETH_MAX_RX_DESCRIPTORS)
+        {
+            break;
         }
     }
 }

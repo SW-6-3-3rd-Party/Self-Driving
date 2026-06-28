@@ -666,12 +666,30 @@ def print_network_check(args: argparse.Namespace) -> None:
         ["ip", "route", "get", args.rear_host],
         ["ip", "neigh", "show", args.front_host, "dev", args.vehicle_iface],
     ]
+    front_neigh_output = ""
     print("=== vehicle Ethernet check ===")
     for command in checks:
         ok, output = _run_ip_command(command)
         status = "ok" if ok else "fail"
         print(f"{status}: {' '.join(command)}")
         print(output if output else "(no output)")
+        if command[:3] == ["ip", "neigh", "show"]:
+            front_neigh_output = output.lower()
+
+    expected_mac = args.front_mac.lower()
+    if expected_mac not in front_neigh_output:
+        print()
+        print("!!! FRONT ARP/MAC MISMATCH !!!")
+        print(f"Expected FRONT {args.front_host} lladdr {expected_mac} on {args.vehicle_iface}.")
+        print("Steering UDP will not reach FRONT while this is wrong.")
+        print("Fix with:")
+        print(
+            "  sudo ip neigh replace "
+            f"{args.front_host} lladdr {expected_mac} dev {args.vehicle_iface} nud permanent"
+        )
+        print("Or start this script with:")
+        print("  sudo python3 remote_control_flask.py --setup-eth0 --host 0.0.0.0 --port 8080")
+        print()
 
 
 def parse_args() -> argparse.Namespace:
