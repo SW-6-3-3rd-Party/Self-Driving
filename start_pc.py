@@ -13,6 +13,13 @@ NPM = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
 
 PROCESSES = [
     (
+        "pc-backend",
+        [sys.executable, str(ROOT / "pc_backend" / "pc_ota_backend.py")],
+        {
+            "HPVC_RUNTIME_BASE_URL": "http://192.168.219.104:8000",
+        }
+    ),
+    (
         "react-dev",
         [NPM, "run", "dev", "--", "--host", "0.0.0.0"],
         {}
@@ -22,9 +29,14 @@ PROCESSES = [
 
 def check_prerequisites():
     vite_path = ROOT / "node_modules" / ".bin" / "vite"
+    backend_path = ROOT / "pc_backend" / "pc_ota_backend.py"
 
     if vite_path.exists():
-        return True
+        if backend_path.exists():
+            return True
+
+        print(f"[start_pc] missing PC backend: {backend_path}", flush=True)
+        return False
 
     print("[start_pc] missing Node dependencies: node_modules/.bin/vite", flush=True)
     print("[start_pc] install with: npm.cmd install", flush=True)
@@ -80,7 +92,8 @@ def main():
         print()
         print("[start_pc] all services started", flush=True)
         print("[start_pc] React HMI: http://127.0.0.1:5173", flush=True)
-        print("[start_pc] HPVC API target: http://192.168.137.50:8000", flush=True)
+        print("[start_pc] PC backend: http://127.0.0.1:8080", flush=True)
+        print("[start_pc] HPVC runtime target: http://192.168.219.104:8000", flush=True)
         print("[start_pc] press Ctrl+C to stop", flush=True)
 
         while True:

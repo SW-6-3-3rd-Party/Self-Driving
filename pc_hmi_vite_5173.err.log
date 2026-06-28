@@ -1,0 +1,54 @@
+[2m오후 10:31:08[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnexpected token. Did you mean `{'>'}` or `&gt;`?
+     [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m src/App.jsx:536:54 [38;5;246m][0m
+     [38;5;246m│[0m
+ [38;5;246m536 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m<[0m[38;5;249md[0m[38;5;249md[0m[38;5;249m>[0m[38;5;249m{[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249mm[0m[38;5;249mo[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249mS[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249mu[0m[38;5;249ms[0m[38;5;249m?[0m[38;5;249m.[0m[38;5;249mf[0m[38;5;249mr[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m_[0m[38;5;249ms[0m[38;5;249mo[0m[38;5;249mu[0m[38;5;249mr[0m[38;5;249mc[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m|[0m[38;5;249m|[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249m-[0m[38;5;249m"[0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m-[0m[38;5;249m>[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249mm[0m[38;5;249mo[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249mS[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249mu[0m[38;5;249ms[0m[38;5;249m?[0m[38;5;249m.[0m[38;5;249mf[0m[38;5;249mr[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m_[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249mg[0m[38;5;249me[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m|[0m[38;5;249m|[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249m-[0m[38;5;249m"[0m[38;5;249m}[0m[38;5;249m<[0m[38;5;249m/[0m[38;5;249md[0m[38;5;249md[0m[38;5;249m>[0m
+ [38;5;240m    │[0m                                                      │ 
+ [38;5;240m    │[0m                                                      ╰─ 
+[38;5;246m─────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/gkqls/OneDrive/문서/오토에버 프로젝트3/PC/src/App.jsx[39m
+      at transformWithOxc (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:24646:26)
+      at async viteTransformMiddleware (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:24440:20)
+[2m오후 10:31:08[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /src/App.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m오후 11:08:43[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /src/App.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m오후 11:08:43[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /src/App.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m오후 11:08:44[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnexpected token
+     [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m src/App.jsx:569:27 [38;5;246m][0m
+     [38;5;246m│[0m
+ [38;5;246m569 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m<[0m[38;5;249md[0m[38;5;249md[0m[38;5;249m>[0m[38;5;249mf[0m[38;5;249mr[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249mT[0m[38;5;249mo[0m[38;5;249mF[0m[38;5;249m [0m<=[38;5;249m [0m[38;5;249m0[0m[38;5;249m.[0m[38;5;249m1[0m[38;5;249m8[0m[38;5;249m [0m[38;5;249mm[0m[38;5;249m<[0m[38;5;249m/[0m[38;5;249md[0m[38;5;249md[0m[38;5;249m>[0m
+ [38;5;240m    │[0m                           ─┬  
+ [38;5;240m    │[0m                            ╰── 
+[38;5;246m─────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/gkqls/OneDrive/문서/오토에버 프로젝트3/PC/src/App.jsx[39m
+      at transformWithOxc (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:24646:26)
+[2m오후 11:08:44[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnexpected token
+     [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m src/App.jsx:569:27 [38;5;246m][0m
+     [38;5;246m│[0m
+ [38;5;246m569 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m<[0m[38;5;249md[0m[38;5;249md[0m[38;5;249m>[0m[38;5;249mf[0m[38;5;249mr[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249mT[0m[38;5;249mo[0m[38;5;249mF[0m[38;5;249m [0m<=[38;5;249m [0m[38;5;249m0[0m[38;5;249m.[0m[38;5;249m1[0m[38;5;249m8[0m[38;5;249m [0m[38;5;249mm[0m[38;5;249m<[0m[38;5;249m/[0m[38;5;249md[0m[38;5;249md[0m[38;5;249m>[0m
+ [38;5;240m    │[0m                           ─┬  
+ [38;5;240m    │[0m                            ╰── 
+[38;5;246m─────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/gkqls/OneDrive/문서/오토에버 프로젝트3/PC/src/App.jsx[39m
+      at transformWithOxc (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/gkqls/OneDrive/%EB%AC%B8%EC%84%9C/%EC%98%A4%ED%86%A0%EC%97%90%EB%B2%84%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B83/PC/node_modules/vite/dist/node/chunks/node.js:24646:26)
+[2m오후 11:08:44[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /src/App.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m오후 11:08:44[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /src/App.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)

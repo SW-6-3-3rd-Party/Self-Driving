@@ -5,6 +5,8 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+import urllib.error
+import urllib.request
 
 import paho.mqtt.client as mqtt
 
@@ -23,6 +25,11 @@ PC_ARTIFACT_HOST = os.environ.get("PC_ARTIFACT_HOST", "192.168.137.1")
 
 # Flask Backend + Artifact HTTP Server port
 PC_BACKEND_PORT = int(os.environ.get("PC_BACKEND_PORT", "8080"))
+
+# HPVC runtime API used by the PC HMI. The old 8080 Flask controller is only
+# for bench tests and is intentionally not used by the production PC controls.
+HPVC_RUNTIME_BASE_URL = os.environ.get("HPVC_RUNTIME_BASE_URL", "http://192.168.219.104:8000").rstrip("/")
+HPVC_PROXY_TIMEOUT_S = float(os.environ.get("HPVC_PROXY_TIMEOUT_S", "2.0"))
 
 # PC 내부 Mosquitto Broker
 MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "192.168.137.1")
@@ -91,6 +98,64 @@ def make_job_id(target: str) -> str:
 
 def make_artifact_url(filename: str) -> str:
     return f"http://{PC_ARTIFACT_HOST}:{PC_BACKEND_PORT}/packages/{filename}"
+
+
+def _decode_json_body(raw: bytes):
+    if not raw:
+        return {}
+
+    text = raw.decode("utf-8", errors="replace")
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "raw": text,
+        }
+
+
+def _request_json(url: str, method: str = "GET", payload: dict | None = None):
+    body = None
+    headers = {
+        "Accept": "application/json",
+    }
+
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=HPVC_PROXY_TIMEOUT_S) as response:
+            return _decode_json_body(response.read()), response.status
+
+    except urllib.error.HTTPError as exc:
+        return _decode_json_body(exc.read()), exc.code
+
+    except urllib.error.URLError as exc:
+        return {
+            "result": "failed",
+            "reason": str(exc.reason),
+            "url": url,
+        }, 502
+
+    except TimeoutError as exc:
+        return {
+            "result": "failed",
+            "reason": str(exc),
+            "url": url,
+        }, 504
+
+
+def _proxy_json(base_url: str, path: str, method: str = "GET", payload: dict | None = None):
+    data, status = _request_json(f"{base_url}{path}", method, payload)
+    return jsonify(data), status
+
+
+def _read_request_json() -> dict:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 def publish_ota_job(job: dict):
@@ -216,6 +281,64 @@ def serve_package(filename):
 
 
 # =========================
+# HPVC Vehicle Proxy API
+# =========================
+
+@app.route("/api/vehicle/health", methods=["GET"])
+def vehicle_health():
+    runtime_status, runtime_code = _request_json(f"{HPVC_RUNTIME_BASE_URL}/health")
+
+    return jsonify({
+        "runtime_api": {
+            "base_url": HPVC_RUNTIME_BASE_URL,
+            "reachable": runtime_code < 400,
+            "status_code": runtime_code,
+            "status": runtime_status,
+        },
+    })
+
+
+@app.route("/api/vehicle/runtime/status", methods=["GET"])
+def runtime_vehicle_status():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/vehicle/status")
+
+
+@app.route("/api/vehicle/runtime/features", methods=["GET"])
+def runtime_features_status():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/features/status")
+
+
+@app.route("/api/vehicle/runtime/features", methods=["POST"])
+def runtime_features_enable():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/features/enable", "POST", _read_request_json())
+
+
+@app.route("/api/vehicle/runtime/manual", methods=["POST"])
+def runtime_manual_control():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/control/manual", "POST", _read_request_json())
+
+
+@app.route("/api/vehicle/runtime/turn-signal", methods=["POST"])
+def runtime_turn_signal():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/control/turn-signal", "POST", _read_request_json())
+
+
+@app.route("/api/vehicle/runtime/reset", methods=["POST"])
+def runtime_control_reset():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/control/reset", "POST", _read_request_json())
+
+
+@app.route("/api/vehicle/runtime/version", methods=["GET"])
+def runtime_version():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/version")
+
+
+@app.route("/api/vehicle/runtime/ota-status", methods=["GET"])
+def runtime_ota_status():
+    return _proxy_json(HPVC_RUNTIME_BASE_URL, "/ota/status")
+
+
+# =========================
 # PC OTA Backend API
 # =========================
 
@@ -227,6 +350,7 @@ def health():
         "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
         "artifact_base_url": f"http://{PC_ARTIFACT_HOST}:{PC_BACKEND_PORT}/packages",
         "packages_dir": str(PACKAGES_DIR),
+        "hpvc_runtime_base_url": HPVC_RUNTIME_BASE_URL,
     })
 
 
