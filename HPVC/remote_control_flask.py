@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - handled in main()
 
 DEFAULT_FRONT_HOST = "192.168.10.11"
 DEFAULT_FRONT_PORT = 5100
+DEFAULT_FRONT_BROADCAST_HOST = "192.168.10.255"
 DEFAULT_VEHICLE_IFACE = "eth0"
 DEFAULT_VEHICLE_IP = "192.168.10.1"
 DEFAULT_VEHICLE_CIDR = "192.168.10.1/24"
@@ -88,6 +89,7 @@ class HpvcRemoteController:
         *,
         front_host: str,
         front_port: int,
+        front_broadcast_host: str | None,
         front_source_ip: str,
         front_source_port: int,
         rear_source_ip: str,
@@ -99,6 +101,9 @@ class HpvcRemoteController:
         max_speed_mps: float,
     ) -> None:
         self.front_target = (front_host, front_port)
+        self.front_broadcast_target = (
+            (front_broadcast_host, front_port) if front_broadcast_host else None
+        )
         self.rear_target = (rear_host, rear_port)
         self.publish_period_s = 1.0 / max(1.0, publish_hz)
         self.steer_rad = abs(float(steer_rad))
@@ -120,6 +125,8 @@ class HpvcRemoteController:
     def _open_udp_socket(self, label: str, source_ip: str, source_port: int) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if label == "front":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         try:
             sock.bind((source_ip, source_port))
         except OSError as error:
@@ -156,6 +163,11 @@ class HpvcRemoteController:
         with self._lock:
             data = asdict(self._state)
             data["front_target"] = f"{self.front_target[0]}:{self.front_target[1]}"
+            data["front_broadcast_target"] = (
+                f"{self.front_broadcast_target[0]}:{self.front_broadcast_target[1]}"
+                if self.front_broadcast_target
+                else ""
+            )
             data["rear_target"] = f"{self.rear_target[0]}:{self.rear_target[1]}"
             data["publish_hz"] = round(1.0 / self.publish_period_s, 3)
             data["steer_rad"] = self._steering_angle_locked()
@@ -284,9 +296,14 @@ class HpvcRemoteController:
         packet[28] = 1 if self._state.emergency_stop else 0
         return bytes(packet)
 
+    def _send_front_packet_locked(self, packet: bytes) -> None:
+        self._front_socket.sendto(packet, self.front_target)
+        if self.front_broadcast_target is not None:
+            self._front_socket.sendto(packet, self.front_broadcast_target)
+
     def _publish_locked(self) -> None:
         try:
-            self._front_socket.sendto(self._pack_front_steering_locked(), self.front_target)
+            self._send_front_packet_locked(self._pack_front_steering_locked())
             self._rear_socket.sendto(self._pack_rear_drive_locked(), self.rear_target)
             self._state.sent_front_packets += 1
             self._state.sent_rear_packets += 1
@@ -305,6 +322,7 @@ class HpvcRemoteController:
             f"speed={self._state.target_speed_mps:.2f}m/s "
             f"angle={self._steering_angle_locked():+.3f}rad "
             f"front={self.front_target[0]}:{self.front_target[1]} "
+            f"front_bcast={self.front_broadcast_target[0] + ':' + str(self.front_broadcast_target[1]) if self.front_broadcast_target else '-'} "
             f"rear={self.rear_target[0]}:{self.rear_target[1]} "
             f"src_front={self._state.front_source} "
             f"src_rear={self._state.rear_source} "
@@ -316,7 +334,7 @@ class HpvcRemoteController:
         self._state.drive_command = DRIVE_STOP
         self._state.steering_command = STEER_STRAIGHT
         self._rear_socket.sendto(self._pack_rear_drive_locked(), self.rear_target)
-        self._front_socket.sendto(self._pack_front_steering_locked(emergency_center=True), self.front_target)
+        self._send_front_packet_locked(self._pack_front_steering_locked(emergency_center=True))
 
     def _resync_front_sequence_locked(self) -> None:
         original_drive = self._state.drive_command
@@ -332,7 +350,7 @@ class HpvcRemoteController:
             for index in range(4):
                 self._state.sequence = (base_sequence + FRONT_SEQUENCE_RESYNC_STEP * index) & 0xFFFFFFFF
                 sent_sequences.append(self._state.sequence)
-                self._front_socket.sendto(self._pack_front_steering_locked(), self.front_target)
+                self._send_front_packet_locked(self._pack_front_steering_locked())
                 self._state.alive_count = (self._state.alive_count + 1) & 0xFFFF
                 self._state.sent_front_packets += 1
                 time.sleep(0.01)
@@ -707,6 +725,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-network-check", action="store_true")
     parser.add_argument("--front-host", default=DEFAULT_FRONT_HOST)
     parser.add_argument("--front-port", type=int, default=DEFAULT_FRONT_PORT)
+    parser.add_argument(
+        "--front-broadcast-host",
+        default=DEFAULT_FRONT_BROADCAST_HOST,
+        help="Also send FRONT steering packets to this broadcast IP. Use '' to disable.",
+    )
     parser.add_argument("--front-source-ip", default=None)
     parser.add_argument("--front-source-port", type=int, default=DEFAULT_FRONT_SOURCE_PORT)
     parser.add_argument("--front-mac", default=DEFAULT_FRONT_MAC)
@@ -734,6 +757,7 @@ def main() -> None:
     controller = HpvcRemoteController(
         front_host=args.front_host,
         front_port=args.front_port,
+        front_broadcast_host=args.front_broadcast_host,
         front_source_ip=args.front_source_ip,
         front_source_port=args.front_source_port,
         rear_source_ip=args.rear_source_ip,
@@ -748,6 +772,8 @@ def main() -> None:
     app = create_app(controller)
     print(f"HPVC Flask remote control: http://{args.host}:{args.port}")
     print(f"FRONT steering: {args.front_source_ip}:{args.front_source_port} -> {args.front_host}:{args.front_port}")
+    if args.front_broadcast_host:
+        print(f"FRONT broadcast: {args.front_source_ip}:{args.front_source_port} -> {args.front_broadcast_host}:{args.front_port}")
     print(f"REAR drive    : {args.rear_source_ip}:{args.rear_source_port} -> {args.rear_host}:{args.rear_port}")
     app.run(host=args.host, port=args.port, threaded=True)
 

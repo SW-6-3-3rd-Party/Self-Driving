@@ -23,12 +23,14 @@
 #define FRONT_STEERING_SERVO_PERIOD_US         (20000u)
 #define FRONT_STEERING_SERVO_INVERT            (0u)
 
+#define FRONT_STEERING_BOOT_CENTER_MS          (500u)
+
 /*
- * Default PWM output is TOM0 channel 3 on P02.3. Positive steering angle maps
+ * Default PWM output is software-generated GPIO pulses on P02.3.
+ * Positive steering angle maps
  * to FRONT_STEERING_SERVO_LEFT_PULSE_US; negative steering angle maps to
  * FRONT_STEERING_SERVO_RIGHT_PULSE_US. If your board routes the servo signal
- * elsewhere, change FRONT_STEERING_SERVO_PIN,
- * FRONT_STEERING_SERVO_TOM, and FRONT_STEERING_SERVO_TOM_CHANNEL in
+ * elsewhere, change FRONT_STEERING_SERVO_PORT and FRONT_STEERING_SERVO_PIN in
  * FrontSteeringNode.c.
  */
 
@@ -47,6 +49,7 @@ typedef struct
 
 void FrontSteeringNode_init(void);
 void FrontSteeringNode_runOnce(void);
+void FrontSteeringNode_holdCurrentForMs(uint32 holdMs);
 boolean FrontSteeringNode_acceptHpscPacket(const uint8 *payload, uint16 length, uint32 nowMs);
 boolean FrontSteeringNode_acceptEthernetFrame(const uint8 *frame, uint16 length, uint32 nowMs);
 FrontSteeringNode_Status FrontSteeringNode_getStatus(void);

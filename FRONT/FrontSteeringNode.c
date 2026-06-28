@@ -4,10 +4,6 @@
 
 #include "IfxPort.h"
 #include "IfxStm.h"
-#include "Gtm/Std/IfxGtm.h"
-#include "Gtm/Std/IfxGtm_Cmu.h"
-#include "Gtm/Std/IfxGtm_Tom.h"
-#include "_PinMap/IfxGtm_PinMap.h"
 
 #define HPSC_PACKET_SIZE                       (40u)
 #define HPSC_HEADER_SIZE                       (32u)
@@ -21,21 +17,12 @@
 #define IPV4_PROTOCOL_UDP                      (17u)
 #define ETHERTYPE_IPV4                         (0x0800u)
 
-/* Servo signal pin: P02.3, TOM0 channel 3. */
+/* Servo signal pin: P02.3, driven by software GPIO pulses. */
+#ifndef FRONT_STEERING_SERVO_PORT
+#define FRONT_STEERING_SERVO_PORT              (&MODULE_P02)
+#endif
 #ifndef FRONT_STEERING_SERVO_PIN
-#define FRONT_STEERING_SERVO_PIN               IfxGtm_TOM0_3_TOUT3_P02_3_OUT
-#endif
-#ifndef FRONT_STEERING_SERVO_TOM
-#define FRONT_STEERING_SERVO_TOM               IfxGtm_Tom_0
-#endif
-#ifndef FRONT_STEERING_SERVO_TOM_CHANNEL
-#define FRONT_STEERING_SERVO_TOM_CHANNEL       IfxGtm_Tom_Ch_3
-#endif
-#ifndef FRONT_STEERING_SERVO_PERIOD_TICKS
-#define FRONT_STEERING_SERVO_PERIOD_TICKS      (20000u)
-#endif
-#ifndef IFXGTM_CMU_CLKEN_FXCLK
-#define IFXGTM_CMU_CLKEN_FXCLK                 IFXGTM_CMU_CLKEN_CLK0
+#define FRONT_STEERING_SERVO_PIN               (3u)
 #endif
 
 typedef struct
@@ -139,26 +126,16 @@ static uint32 crc32Ieee(const uint8 *data, uint16 length)
     return ~crc;
 }
 
-static uint16 servoPeriodTicks(void)
+static void front_delayUs(uint32 delayUs)
 {
-    uint32 periodTicks = FRONT_STEERING_SERVO_PERIOD_TICKS;
+    sint32 ticks = IfxStm_getTicksFromMicroseconds(&MODULE_STM0, delayUs);
 
-    if (periodTicks == 0u)
+    if (ticks <= 0)
     {
-        return 1u;
+        ticks = 1;
     }
-    if (periodTicks > 0xFFFFu)
-    {
-        return 0xFFFFu;
-    }
-    return (uint16)periodTicks;
-}
 
-static uint16 pulseUsToTicks(uint32 pulseUs)
-{
-    uint32 periodTicks = (uint32)servoPeriodTicks();
-    uint32 ticks = (periodTicks * pulseUs) / FRONT_STEERING_SERVO_PERIOD_US;
-    return (uint16)((ticks > periodTicks) ? periodTicks : ticks);
+    IfxStm_waitTicks(&MODULE_STM0, (uint32)ticks);
 }
 
 static uint32 angleToPulseUs(float32 angleRad)
@@ -178,57 +155,50 @@ static uint32 angleToPulseUs(float32 angleRad)
     return FRONT_STEERING_SERVO_CENTER_PULSE_US + (uint32)((-normalized) * span + 0.5f);
 }
 
-static Ifx_GTM_TOM *servoTom(void)
+static void sendServoPulseUs(uint32 pulseUs)
 {
-    return &MODULE_GTM.TOM[FRONT_STEERING_SERVO_TOM];
-}
+    pulseUs = (uint32)clampFloat((float32)pulseUs,
+        (float32)FRONT_STEERING_SERVO_MIN_PULSE_US,
+        (float32)FRONT_STEERING_SERVO_MAX_PULSE_US);
 
-static Ifx_GTM_TOM_TGC *servoTgc(Ifx_GTM_TOM *tom)
-{
-    uint32 tgcIndex = (FRONT_STEERING_SERVO_TOM_CHANNEL <= IfxGtm_Tom_Ch_7) ? 0u : 1u;
-    return IfxGtm_Tom_Ch_getTgcPointer(tom, tgcIndex);
+    IfxPort_setPinHigh(FRONT_STEERING_SERVO_PORT, FRONT_STEERING_SERVO_PIN);
+    front_delayUs(pulseUs);
+
+    IfxPort_setPinLow(FRONT_STEERING_SERVO_PORT, FRONT_STEERING_SERVO_PIN);
+    front_delayUs(FRONT_STEERING_SERVO_PERIOD_US - pulseUs);
 }
 
 static void applyServoAngle(float32 angleRad)
 {
     uint32 pulseUs = angleToPulseUs(angleRad);
-    uint16 dutyTicks = pulseUsToTicks(pulseUs);
-    Ifx_GTM_TOM *tom = servoTom();
-    Ifx_GTM_TOM_TGC *tgc = servoTgc(tom);
-
-    IfxGtm_Tom_Ch_setCompareShadow(tom, FRONT_STEERING_SERVO_TOM_CHANNEL,
-        servoPeriodTicks(), dutyTicks);
-    IfxGtm_Tom_Tgc_enableChannelUpdate(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE);
-    IfxGtm_Tom_Tgc_setChannelForceUpdate(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE, FALSE);
-    IfxGtm_Tom_Tgc_trigger(tgc);
+    sendServoPulseUs(pulseUs);
 }
 
 static void initServoPwm(void)
 {
-    IfxGtm_enable(&MODULE_GTM);
-    IfxGtm_Cmu_enableClocks(&MODULE_GTM, IFXGTM_CMU_CLKEN_FXCLK);
+    IfxPort_setPinModeOutput(
+        FRONT_STEERING_SERVO_PORT,
+        FRONT_STEERING_SERVO_PIN,
+        IfxPort_OutputMode_pushPull,
+        IfxPort_OutputIdx_general
+    );
+    IfxPort_setPinLow(FRONT_STEERING_SERVO_PORT, FRONT_STEERING_SERVO_PIN);
+}
 
-    Ifx_GTM_TOM *tom = servoTom();
-    Ifx_GTM_TOM_TGC *tgc = servoTgc(tom);
-    uint16 periodTicks = servoPeriodTicks();
-    uint16 centerTicks = pulseUsToTicks(FRONT_STEERING_SERVO_CENTER_PULSE_US);
+void FrontSteeringNode_holdCurrentForMs(uint32 holdMs)
+{
+    uint32 pulseCount = (holdMs * 1000u + FRONT_STEERING_SERVO_PERIOD_US - 1u) /
+        FRONT_STEERING_SERVO_PERIOD_US;
 
-    IfxGtm_Tom_Ch_setClockSource(tom, FRONT_STEERING_SERVO_TOM_CHANNEL, IfxGtm_Tom_Ch_ClkSrc_cmuFxclk0);
-    IfxGtm_Tom_Ch_setSignalLevel(tom, FRONT_STEERING_SERVO_TOM_CHANNEL, Ifx_ActiveState_high);
-    IfxGtm_Tom_Ch_setResetSource(tom, FRONT_STEERING_SERVO_TOM_CHANNEL, IfxGtm_Tom_Ch_ResetEvent_onCm0);
-    IfxGtm_Tom_Ch_setCounterMode(tom, FRONT_STEERING_SERVO_TOM_CHANNEL, IfxGtm_Tom_Ch_CounterMode_up);
-    IfxGtm_Tom_Ch_setCounterValue(tom, FRONT_STEERING_SERVO_TOM_CHANNEL, 0u);
-    IfxGtm_Tom_Ch_setCompareShadow(tom, FRONT_STEERING_SERVO_TOM_CHANNEL, periodTicks, centerTicks);
-    IfxGtm_Tom_Tgc_enableChannelUpdate(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE);
-    IfxGtm_Tom_Tgc_setChannelForceUpdate(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE, TRUE);
+    if (pulseCount == 0u)
+    {
+        pulseCount = 1u;
+    }
 
-    IfxGtm_PinMap_setTomTout(&FRONT_STEERING_SERVO_PIN,
-        IfxPort_OutputMode_pushPull, IfxPort_PadDriver_cmosAutomotiveSpeed1);
-
-    IfxGtm_Tom_Tgc_enableChannel(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE, FALSE);
-    IfxGtm_Tom_Tgc_enableChannelOutput(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE, FALSE);
-    IfxGtm_Tom_Tgc_trigger(tgc);
-    IfxGtm_Tom_Tgc_setChannelForceUpdate(tgc, FRONT_STEERING_SERVO_TOM_CHANNEL, TRUE, FALSE);
+    for (uint32 index = 0u; index < pulseCount; index++)
+    {
+        applyServoAngle(g_state.appliedAngleRad);
+    }
 }
 
 static void rejectPacket(void)
@@ -322,44 +292,70 @@ boolean FrontSteeringNode_acceptHpscPacket(const uint8 *payload, uint16 length, 
 
 boolean FrontSteeringNode_acceptEthernetFrame(const uint8 *frame, uint16 length, uint32 nowMs)
 {
-    if (frame == 0 || length < (14u + 20u + 8u + HPSC_PACKET_SIZE))
+    if (frame == 0 || length < HPSC_PACKET_SIZE)
     {
         return FALSE;
     }
 
-    uint16 etherType = readU16Be(&frame[12]);
-    if (etherType != ETHERTYPE_IPV4)
+    if (length >= (14u + 20u + 8u + HPSC_PACKET_SIZE))
     {
-        return FALSE;
+        uint16 etherType = readU16Be(&frame[12]);
+        if (etherType == ETHERTYPE_IPV4)
+        {
+            const uint8 *ip = &frame[14];
+            uint8 ihlBytes = (uint8)((ip[0] & 0x0Fu) * 4u);
+            if ((ip[0] >> 4) == 4u && ihlBytes >= 20u && ip[9] == IPV4_PROTOCOL_UDP)
+            {
+                uint16 totalLength = readU16Be(&ip[2]);
+                if (totalLength >= (uint16)(ihlBytes + 8u + HPSC_PACKET_SIZE) &&
+                    ((uint32)14u + totalLength) <= length)
+                {
+                    const uint8 *udp = &ip[ihlBytes];
+                    uint16 dstPort = readU16Be(&udp[2]);
+                    uint16 udpLength = readU16Be(&udp[4]);
+                    if (dstPort == FRONT_STEERING_UDP_PORT &&
+                        udpLength >= (uint16)(8u + HPSC_PACKET_SIZE) &&
+                        FrontSteeringNode_acceptHpscPacket(&udp[8], HPSC_PACKET_SIZE, nowMs))
+                    {
+                        return TRUE;
+                    }
+                }
+            }
+        }
+
+        if (length >= (20u + 8u + HPSC_PACKET_SIZE) &&
+            (frame[0] >> 4) == 4u &&
+            frame[9] == IPV4_PROTOCOL_UDP)
+        {
+            uint8 ihlBytes = (uint8)((frame[0] & 0x0Fu) * 4u);
+            if (ihlBytes >= 20u)
+            {
+                const uint8 *udp = &frame[ihlBytes];
+                uint16 dstPort = readU16Be(&udp[2]);
+                uint16 udpLength = readU16Be(&udp[4]);
+                if (dstPort == FRONT_STEERING_UDP_PORT &&
+                    udpLength >= (uint16)(8u + HPSC_PACKET_SIZE) &&
+                    FrontSteeringNode_acceptHpscPacket(&udp[8], HPSC_PACKET_SIZE, nowMs))
+                {
+                    return TRUE;
+                }
+            }
+        }
     }
 
-    const uint8 *ip = &frame[14];
-    uint8 ihlBytes = (uint8)((ip[0] & 0x0Fu) * 4u);
-    if ((ip[0] >> 4) != 4u || ihlBytes < 20u || ip[9] != IPV4_PROTOCOL_UDP)
+    for (uint16 offset = 0u; offset <= (uint16)(length - HPSC_PACKET_SIZE); offset++)
     {
-        return FALSE;
+        if (frame[offset] == 'H' &&
+            frame[offset + 1u] == 'P' &&
+            frame[offset + 2u] == 'S' &&
+            frame[offset + 3u] == 'C' &&
+            FrontSteeringNode_acceptHpscPacket(&frame[offset], HPSC_PACKET_SIZE, nowMs))
+        {
+            return TRUE;
+        }
     }
 
-    uint16 totalLength = readU16Be(&ip[2]);
-    if (totalLength < (uint16)(ihlBytes + 8u + HPSC_PACKET_SIZE))
-    {
-        return FALSE;
-    }
-
-    if ((uint32)14u + totalLength > length)
-    {
-        return FALSE;
-    }
-
-    const uint8 *udp = &ip[ihlBytes];
-    uint16 dstPort = readU16Be(&udp[2]);
-    uint16 udpLength = readU16Be(&udp[4]);
-    if (dstPort != FRONT_STEERING_UDP_PORT || udpLength < (uint16)(8u + HPSC_PACKET_SIZE))
-    {
-        return FALSE;
-    }
-
-    return FrontSteeringNode_acceptHpscPacket(&udp[8], HPSC_PACKET_SIZE, nowMs);
+    return FALSE;
 }
 
 void FrontSteeringNode_init(void)
@@ -368,7 +364,8 @@ void FrontSteeringNode_init(void)
     g_state.maxRateRadS = FRONT_STEERING_DEFAULT_MAX_RATE_RAD_S;
     g_state.lastApplyMs = front_nowMs();
     initServoPwm();
-    applyServoAngle(0.0f);
+    g_state.appliedAngleRad = 0.0f;
+    FrontSteeringNode_holdCurrentForMs(FRONT_STEERING_BOOT_CENTER_MS);
 }
 
 void FrontSteeringNode_runOnce(void)

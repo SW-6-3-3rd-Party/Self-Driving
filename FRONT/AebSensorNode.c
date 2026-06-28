@@ -10,6 +10,9 @@
 #define AEB_VALID_ULTRA_LEFT                  (1u << 0)
 #define AEB_VALID_ULTRA_RIGHT                 (1u << 1)
 #define AEB_VALID_TOF                         (1u << 2)
+#define AEB_VALID_STEERING_RX                 (1u << 5)
+#define AEB_VALID_STEERING_COMMAND            (1u << 6)
+#define AEB_VALID_STEERING_CENTER             (1u << 7)
 
 #define AEB_ETH_TX_BUFFER_SIZE                (256u)
 #define AEB_ETH_RX_BUFFER_SIZE                (256u)
@@ -1087,12 +1090,24 @@ static void aeb_sendFrame(const AebSensorNode_Frame *frame)
     IfxGeth_dma_clearInterruptFlag(g_geth.gethSFR, IfxGeth_DmaChannel_0, IfxGeth_DmaInterruptFlag_transmitInterrupt);
 }
 
-static boolean aeb_rxLooksLikeIpv4Udp(const uint8 *frame)
+static uint16 aeb_getRxFrameSize(IfxGeth_RxDescr *descriptor)
 {
-    return frame[12] == 0x08u &&
-        frame[13] == 0x00u &&
-        (frame[14] >> 4) == 4u &&
-        frame[23] == 17u;
+    if (descriptor == NULL_PTR)
+    {
+        return 0u;
+    }
+
+    uint32 rdes3 = descriptor->RDES3.U;
+    uint32 rdes1 = descriptor->RDES1.U;
+
+    if (((rdes3 & (1UL << 15)) != 0U) ||
+        ((rdes1 & (1UL << 7)) != 0U) ||
+        ((rdes3 & (1UL << 28)) == 0U))
+    {
+        return 0u;
+    }
+
+    return (uint16)((rdes3 & 0x7FFFu) - 4u);
 }
 
 static void aeb_pollSteeringRx(void)
@@ -1102,10 +1117,12 @@ static void aeb_pollSteeringRx(void)
 
     while (IfxGeth_Eth_isRxDataAvailable(&g_geth, IfxGeth_RxDmaChannel_0) != FALSE)
     {
+        uint16 rxLength = aeb_getRxFrameSize(
+            (IfxGeth_RxDescr *)IfxGeth_Eth_getActualRxDescriptor(&g_geth, IfxGeth_RxDmaChannel_0));
         uint8 *rxBuffer = (uint8 *)IfxGeth_Eth_getReceiveBuffer(&g_geth, IfxGeth_RxDmaChannel_0);
-        if (rxBuffer != 0 && aeb_rxLooksLikeIpv4Udp(rxBuffer))
+        if (rxBuffer != 0 && rxLength >= 40u && rxLength <= AEB_ETH_RX_BUFFER_SIZE)
         {
-            (void)FrontSteeringNode_acceptEthernetFrame(rxBuffer, AEB_ETH_RX_BUFFER_SIZE, nowMs);
+            (void)FrontSteeringNode_acceptEthernetFrame(rxBuffer, rxLength, nowMs);
         }
 
         IfxGeth_Eth_freeReceiveBuffer(&g_geth, IfxGeth_RxDmaChannel_0);
@@ -1168,6 +1185,20 @@ void AebSensorNode_runOnce(void)
         g_latestFrame.validMask |= AEB_VALID_ULTRA_RIGHT;
     }
 
+    FrontSteeringNode_Status steeringStatus = FrontSteeringNode_getStatus();
+    if (steeringStatus.linkValid)
+    {
+        g_latestFrame.validMask |= AEB_VALID_STEERING_RX;
+    }
+    if (steeringStatus.commandValid)
+    {
+        g_latestFrame.validMask |= AEB_VALID_STEERING_COMMAND;
+    }
+    if (steeringStatus.emergencyCenter)
+    {
+        g_latestFrame.validMask |= AEB_VALID_STEERING_CENTER;
+    }
+
     aeb_sendFrame(&g_latestFrame);
     aeb_pollSteeringRx();
 
@@ -1182,7 +1213,7 @@ void AebSensorNode_runOnce(void)
         }
     }
 
-    aeb_delayMs(AEB_NODE_LOOP_PERIOD_MS);
+    FrontSteeringNode_holdCurrentForMs(AEB_NODE_LOOP_PERIOD_MS);
 }
 
 AebSensorNode_Frame AebSensorNode_getLatestFrame(void)

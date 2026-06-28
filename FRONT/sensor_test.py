@@ -44,6 +44,9 @@ LEGACY_V2_FORMAT = "<fffffBBBB"
 AEB_VALID_LEFT = 1 << 0
 AEB_VALID_RIGHT = 1 << 1
 AEB_VALID_TOF = 1 << 2
+AEB_VALID_STEERING_RX = 1 << 5
+AEB_VALID_STEERING_COMMAND = 1 << 6
+AEB_VALID_STEERING_CENTER = 1 << 7
 
 TOF_FAULT_NAMES = {
     0x00: "TOF_NOT_TRIED",
@@ -118,6 +121,10 @@ def valid_compact(mask: int) -> str:
             "L" if mask & AEB_VALID_LEFT else "-",
             "R" if mask & AEB_VALID_RIGHT else "-",
             "T" if mask & AEB_VALID_TOF else "-",
+            "|",
+            "S" if mask & AEB_VALID_STEERING_RX else "-",
+            "C" if mask & AEB_VALID_STEERING_COMMAND else "-",
+            "E" if mask & AEB_VALID_STEERING_CENTER else "-",
         )
     )
 
@@ -157,6 +164,12 @@ def packet_note(packet: dict) -> str:
         missing.append("ToF")
     if missing:
         notes.append("INVALID_" + ",".join(missing))
+    if packet["valid"] & AEB_VALID_STEERING_COMMAND:
+        notes.append("STEER_CMD")
+    elif packet["valid"] & AEB_VALID_STEERING_RX:
+        notes.append("STEER_RX_CENTER")
+    elif packet["valid"] & AEB_VALID_STEERING_CENTER:
+        notes.append("STEER_WATCHDOG_CENTER")
     for side, raw_key, valid_bit in (
         ("LEFT", "left_raw_cm_x10", AEB_VALID_LEFT),
         ("RIGHT", "right_raw_cm_x10", AEB_VALID_RIGHT),
@@ -179,6 +192,7 @@ def print_sensor_header() -> None:
         "------ ------ ------- ------- ------ -------------------------"
     )
     print("        distance prefix ! means raw value exists but the valid bit is OFF")
+    print("        valid bits are L/R/T sensors and S/C/E steering rx/command/center")
 
 
 def decode_aeb1(data: bytes) -> dict:
