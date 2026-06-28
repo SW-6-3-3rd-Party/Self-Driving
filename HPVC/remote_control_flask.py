@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import socket
+import subprocess
 import struct
 import threading
 import time
@@ -29,10 +30,16 @@ except ImportError:  # pragma: no cover - handled in main()
 
 DEFAULT_FRONT_HOST = "192.168.10.11"
 DEFAULT_FRONT_PORT = 5100
-DEFAULT_FRONT_SOURCE_IP = "0.0.0.0"
+DEFAULT_VEHICLE_IFACE = "eth0"
+DEFAULT_VEHICLE_IP = "192.168.10.1"
+DEFAULT_VEHICLE_CIDR = "192.168.10.1/24"
+DEFAULT_FRONT_SOURCE_IP = DEFAULT_VEHICLE_IP
 DEFAULT_FRONT_SOURCE_PORT = 5101
+DEFAULT_FRONT_MAC = "02:37:50:ae:b0:01"
 DEFAULT_REAR_HOST = "192.168.10.12"
 DEFAULT_REAR_PORT = 5110
+DEFAULT_REAR_SOURCE_IP = DEFAULT_VEHICLE_IP
+DEFAULT_REAR_SOURCE_PORT = 0
 
 HPSC_MAGIC = b"HPSC"
 HPSC_VERSION = 1
@@ -43,6 +50,7 @@ HPSC_FLAG_STEERING_VALID = 1 << 0
 HPSC_FLAG_EMERGENCY_CENTER = 1 << 1
 HPSC_FLAG_UPSTREAM_VALID = 1 << 2
 HPSC_BODY_FORMAT = "<4sBBBBIQffHHI"
+FRONT_SEQUENCE_RESYNC_STEP = 0x40000000
 
 DRIVE_STOP = "STOP"
 DRIVE_FORWARD = "FORWARD"
@@ -70,6 +78,7 @@ class RemoteControlState:
     sent_rear_packets: int = 0
     last_error: str | None = None
     front_source: str = ""
+    rear_source: str = ""
     updated_monotonic_s: float = 0.0
 
 
@@ -81,6 +90,8 @@ class HpvcRemoteController:
         front_port: int,
         front_source_ip: str,
         front_source_port: int,
+        rear_source_ip: str,
+        rear_source_port: int,
         rear_host: str,
         rear_port: int,
         publish_hz: float,
@@ -93,29 +104,38 @@ class HpvcRemoteController:
         self.steer_rad = abs(float(steer_rad))
         self.max_speed_mps = max(0.01, float(max_speed_mps))
         self._lock = threading.RLock()
-        self._state = RemoteControlState(updated_monotonic_s=time.monotonic())
-        self._front_socket = self._open_front_socket(front_source_ip, front_source_port)
-        self._rear_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._state = RemoteControlState(
+            sequence=int(time.monotonic() * 1000.0) & 0xFFFFFFFF,
+            updated_monotonic_s=time.monotonic(),
+        )
+        self._front_socket = self._open_udp_socket("front", front_source_ip, front_source_port)
+        self._rear_socket = self._open_udp_socket("rear", rear_source_ip, rear_source_port)
+        with self._lock:
+            self._resync_front_sequence_locked()
         self._running = threading.Event()
         self._running.set()
         self._thread = threading.Thread(target=self._publish_loop, name="hpvc-remote-publisher", daemon=True)
         self._thread.start()
 
-    def _open_front_socket(self, source_ip: str, source_port: int) -> socket.socket:
+    def _open_udp_socket(self, label: str, source_ip: str, source_port: int) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((source_ip, source_port))
         except OSError as error:
-            sock.bind((source_ip, 0))
-            with self._lock:
-                self._state.last_error = (
-                    f"front source port {source_port} unavailable; using ephemeral port: {error}"
-                )
+            sock.close()
+            raise RuntimeError(
+                f"Cannot bind {label} UDP source {source_ip}:{source_port}. "
+                f"On HPVC, configure eth0 as {DEFAULT_VEHICLE_CIDR} first or run "
+                f"this script with --setup-eth0. Original error: {error}"
+            ) from error
         try:
             actual_ip, actual_port = sock.getsockname()
             with self._lock:
-                self._state.front_source = f"{actual_ip}:{actual_port}"
+                if label == "front":
+                    self._state.front_source = f"{actual_ip}:{actual_port}"
+                else:
+                    self._state.rear_source = f"{actual_ip}:{actual_port}"
         except OSError:
             pass
         return sock
@@ -164,6 +184,7 @@ class HpvcRemoteController:
                     self._state.steering_command = STEER_STRAIGHT
             self._state.updated_monotonic_s = time.monotonic()
             self._publish_locked()
+            self._print_command_locked()
             return self.snapshot()
 
     def stop(self, *, clear_emergency: bool = True) -> dict[str, Any]:
@@ -174,6 +195,7 @@ class HpvcRemoteController:
                 self._state.emergency_stop = False
             self._state.updated_monotonic_s = time.monotonic()
             self._publish_locked()
+            self._print_command_locked()
             return self.snapshot()
 
     @staticmethod
@@ -274,11 +296,58 @@ class HpvcRemoteController:
         except OSError as error:
             self._state.last_error = str(error)
 
+    def _print_command_locked(self) -> None:
+        print(
+            "CMD "
+            f"seq={self._state.sequence} "
+            f"drive={self._state.drive_command} "
+            f"steer={self._state.steering_command} "
+            f"speed={self._state.target_speed_mps:.2f}m/s "
+            f"angle={self._steering_angle_locked():+.3f}rad "
+            f"front={self.front_target[0]}:{self.front_target[1]} "
+            f"rear={self.rear_target[0]}:{self.rear_target[1]} "
+            f"src_front={self._state.front_source} "
+            f"src_rear={self._state.rear_source} "
+            f"err={self._state.last_error or '-'}",
+            flush=True,
+        )
+
     def _send_stop_locked(self) -> None:
         self._state.drive_command = DRIVE_STOP
         self._state.steering_command = STEER_STRAIGHT
         self._rear_socket.sendto(self._pack_rear_drive_locked(), self.rear_target)
         self._front_socket.sendto(self._pack_front_steering_locked(emergency_center=True), self.front_target)
+
+    def _resync_front_sequence_locked(self) -> None:
+        original_drive = self._state.drive_command
+        original_steer = self._state.steering_command
+        original_emergency = self._state.emergency_stop
+        base_sequence = self._state.sequence & (FRONT_SEQUENCE_RESYNC_STEP - 1)
+        sent_sequences: list[int] = []
+
+        self._state.drive_command = DRIVE_STOP
+        self._state.steering_command = STEER_STRAIGHT
+        self._state.emergency_stop = False
+        try:
+            for index in range(4):
+                self._state.sequence = (base_sequence + FRONT_SEQUENCE_RESYNC_STEP * index) & 0xFFFFFFFF
+                sent_sequences.append(self._state.sequence)
+                self._front_socket.sendto(self._pack_front_steering_locked(), self.front_target)
+                self._state.alive_count = (self._state.alive_count + 1) & 0xFFFF
+                self._state.sent_front_packets += 1
+                time.sleep(0.01)
+            self._state.sequence = (sent_sequences[-1] + 1) & 0xFFFFFFFF
+            print(
+                "FRONT sequence resync sent: "
+                + ", ".join(str(sequence) for sequence in sent_sequences),
+                flush=True,
+            )
+        except OSError as error:
+            self._state.last_error = str(error)
+        finally:
+            self._state.drive_command = original_drive
+            self._state.steering_command = original_steer
+            self._state.emergency_stop = original_emergency
 
     def _publish_loop(self) -> None:
         while self._running.wait(self.publish_period_s):
@@ -342,28 +411,41 @@ async function post(path, body) {
   const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
   const data = await res.json();
   statusEl.textContent = JSON.stringify(data, null, 2);
+  updateActiveButtons();
 }
 function update() {
   state.target_speed_mps = Number(speed.value);
   speedText.textContent = state.target_speed_mps.toFixed(2) + " m/s";
   post("/api/control", state);
 }
-function setDrive(value) { state.drive_command = value; update(); }
-function setSteer(value) { state.steering_command = value; update(); }
-function stopAll() { state.drive_command = "STOP"; state.steering_command = "STRAIGHT"; post("/api/stop", state); }
+function setDrive(value) {
+  state.drive_command = state.drive_command === value ? "STOP" : value;
+  update();
+}
+function setSteer(value) {
+  state.steering_command = state.steering_command === value ? "STRAIGHT" : value;
+  update();
+}
+function stopAll() {
+  state.drive_command = "STOP";
+  state.steering_command = "STRAIGHT";
+  post("/api/stop", state);
+}
+function updateActiveButtons() {
+  document.querySelectorAll("[data-drive]").forEach(btn => {
+    btn.classList.toggle("active", state.drive_command === btn.dataset.drive);
+  });
+  document.querySelectorAll("[data-steer]").forEach(btn => {
+    btn.classList.toggle("active", state.steering_command === btn.dataset.steer);
+  });
+}
 
 speed.addEventListener("input", update);
 document.querySelectorAll("[data-drive]").forEach(btn => {
-  const v = btn.dataset.drive;
-  btn.addEventListener("pointerdown", () => setDrive(v));
-  btn.addEventListener("pointerup", () => setDrive("STOP"));
-  btn.addEventListener("pointerleave", () => setDrive("STOP"));
+  btn.addEventListener("click", () => setDrive(btn.dataset.drive));
 });
 document.querySelectorAll("[data-steer]").forEach(btn => {
-  const v = btn.dataset.steer;
-  btn.addEventListener("pointerdown", () => setSteer(v));
-  btn.addEventListener("pointerup", () => setSteer("STRAIGHT"));
-  btn.addEventListener("pointerleave", () => setSteer("STRAIGHT"));
+  btn.addEventListener("click", () => setSteer(btn.dataset.steer));
 });
 document.querySelector("#stop").addEventListener("click", stopAll);
 document.querySelector("#estop").addEventListener("click", () => post("/api/estop", {}));
@@ -389,6 +471,9 @@ setInterval(async () => {
   const res = await fetch("/api/status");
   statusEl.textContent = JSON.stringify(await res.json(), null, 2);
 }, 500);
+window.addEventListener("beforeunload", () => {
+  navigator.sendBeacon("/api/stop", "{}");
+});
 update();
 </script>
 </body>
@@ -413,6 +498,9 @@ class FallbackHttpApp:
                     return
                 if path == "/api/status":
                     self._send_json(200, controller.snapshot())
+                    return
+                if path == "/favicon.ico":
+                    self._send_bytes(204, b"", "image/x-icon")
                     return
                 self.send_error(404)
 
@@ -488,6 +576,10 @@ def create_app(controller: HpvcRemoteController):
     def status():
         return jsonify(controller.snapshot())
 
+    @app.get("/favicon.ico")
+    def favicon():
+        return Response(status=204)
+
     @app.post("/api/control")
     def control():
         payload = request.get_json(silent=True) or {}
@@ -515,29 +607,119 @@ def create_app(controller: HpvcRemoteController):
     return app
 
 
+def _run_ip_command(args: list[str]) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as error:
+        return False, str(error)
+    output = result.stdout.strip()
+    return result.returncode == 0, output
+
+
+def setup_vehicle_network(args: argparse.Namespace) -> None:
+    commands = [
+        ["ip", "link", "set", args.vehicle_iface, "up"],
+        ["ip", "addr", "replace", args.vehicle_cidr, "dev", args.vehicle_iface],
+        [
+            "ip",
+            "route",
+            "replace",
+            "192.168.10.0/24",
+            "dev",
+            args.vehicle_iface,
+            "src",
+            args.vehicle_ip,
+        ],
+        [
+            "ip",
+            "neigh",
+            "replace",
+            args.front_host,
+            "lladdr",
+            args.front_mac,
+            "dev",
+            args.vehicle_iface,
+            "nud",
+            "permanent",
+        ],
+    ]
+    print("=== setup vehicle Ethernet ===")
+    for command in commands:
+        ok, output = _run_ip_command(command)
+        status = "ok" if ok else "fail"
+        print(f"{status}: {' '.join(command)}")
+        if output:
+            print(output)
+
+
+def print_network_check(args: argparse.Namespace) -> None:
+    checks = [
+        ["ip", "-br", "addr", "show", args.vehicle_iface],
+        ["ip", "route", "get", args.front_host],
+        ["ip", "route", "get", args.rear_host],
+        ["ip", "neigh", "show", args.front_host, "dev", args.vehicle_iface],
+    ]
+    print("=== vehicle Ethernet check ===")
+    for command in checks:
+        ok, output = _run_ip_command(command)
+        status = "ok" if ok else "fail"
+        print(f"{status}: {' '.join(command)}")
+        print(output if output else "(no output)")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--vehicle-iface", default=DEFAULT_VEHICLE_IFACE)
+    parser.add_argument("--vehicle-ip", default=DEFAULT_VEHICLE_IP)
+    parser.add_argument("--vehicle-cidr", default=DEFAULT_VEHICLE_CIDR)
+    parser.add_argument(
+        "--setup-eth0",
+        action="store_true",
+        help="Configure vehicle Ethernet before starting. Run with sudo on HPVC.",
+    )
+    parser.add_argument("--skip-network-check", action="store_true")
     parser.add_argument("--front-host", default=DEFAULT_FRONT_HOST)
     parser.add_argument("--front-port", type=int, default=DEFAULT_FRONT_PORT)
-    parser.add_argument("--front-source-ip", default=DEFAULT_FRONT_SOURCE_IP)
+    parser.add_argument("--front-source-ip", default=None)
     parser.add_argument("--front-source-port", type=int, default=DEFAULT_FRONT_SOURCE_PORT)
+    parser.add_argument("--front-mac", default=DEFAULT_FRONT_MAC)
     parser.add_argument("--rear-host", default=DEFAULT_REAR_HOST)
     parser.add_argument("--rear-port", type=int, default=DEFAULT_REAR_PORT)
+    parser.add_argument("--rear-source-ip", default=None)
+    parser.add_argument("--rear-source-port", type=int, default=DEFAULT_REAR_SOURCE_PORT)
     parser.add_argument("--publish-hz", type=float, default=20.0)
     parser.add_argument("--steer-rad", type=float, default=0.25)
     parser.add_argument("--max-speed-mps", type=float, default=1.0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.front_source_ip is None:
+        args.front_source_ip = args.vehicle_ip
+    if args.rear_source_ip is None:
+        args.rear_source_ip = args.vehicle_ip
+    return args
 
 
 def main() -> None:
     args = parse_args()
+    if args.setup_eth0:
+        setup_vehicle_network(args)
+    if not args.skip_network_check:
+        print_network_check(args)
     controller = HpvcRemoteController(
         front_host=args.front_host,
         front_port=args.front_port,
         front_source_ip=args.front_source_ip,
         front_source_port=args.front_source_port,
+        rear_source_ip=args.rear_source_ip,
+        rear_source_port=args.rear_source_port,
         rear_host=args.rear_host,
         rear_port=args.rear_port,
         publish_hz=args.publish_hz,
@@ -547,6 +729,8 @@ def main() -> None:
     atexit.register(controller.close)
     app = create_app(controller)
     print(f"HPVC Flask remote control: http://{args.host}:{args.port}")
+    print(f"FRONT steering: {args.front_source_ip}:{args.front_source_port} -> {args.front_host}:{args.front_port}")
+    print(f"REAR drive    : {args.rear_source_ip}:{args.rear_source_port} -> {args.rear_host}:{args.rear_port}")
     app.run(host=args.host, port=args.port, threaded=True)
 
 
