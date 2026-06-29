@@ -28,12 +28,18 @@ PC_BACKEND_PORT = int(os.environ.get("PC_BACKEND_PORT", "8080"))
 
 # HPVC runtime API used by the PC HMI. The old 8080 Flask controller is only
 # for bench tests and is intentionally not used by the production PC controls.
-HPVC_RUNTIME_BASE_URL = os.environ.get("HPVC_RUNTIME_BASE_URL", "http://192.168.219.104:8000").rstrip("/")
+HPVC_RUNTIME_BASE_URL = os.environ.get("HPVC_RUNTIME_BASE_URL", "http://192.168.202.98:8000").rstrip("/")
 HPVC_PROXY_TIMEOUT_S = float(os.environ.get("HPVC_PROXY_TIMEOUT_S", "2.0"))
 
 # PC 내부 Mosquitto Broker
 MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "192.168.137.1")
 MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
+MQTT_ENABLED = os.environ.get("PC_OTA_MQTT_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 TOPIC_JOB = "hpvc/ota/job"
 TOPIC_STATUS = "hpvc/ota/status"
@@ -239,6 +245,10 @@ def on_message(client, userdata, msg):
 
 def start_mqtt_client():
     global mqtt_client
+
+    if not MQTT_ENABLED:
+        print("[PC OTA BACKEND] MQTT disabled; vehicle control API only")
+        return
 
     mqtt_client = mqtt.Client(client_id="pc-ota-backend")
     mqtt_client.on_connect = on_connect

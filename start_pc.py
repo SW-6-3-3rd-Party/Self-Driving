@@ -16,7 +16,8 @@ PROCESSES = [
         "pc-backend",
         [sys.executable, str(ROOT / "pc_backend" / "pc_ota_backend.py")],
         {
-            "HPVC_RUNTIME_BASE_URL": "http://192.168.219.104:8000",
+            "HPVC_RUNTIME_BASE_URL": "http://192.168.202.98:8000",
+            "PC_OTA_MQTT_ENABLED": "0",
         }
     ),
     (
@@ -93,7 +94,7 @@ def main():
         print("[start_pc] all services started", flush=True)
         print("[start_pc] React HMI: http://127.0.0.1:5173", flush=True)
         print("[start_pc] PC backend: http://127.0.0.1:8080", flush=True)
-        print("[start_pc] HPVC runtime target: http://192.168.219.104:8000", flush=True)
+        print("[start_pc] HPVC runtime target: http://192.168.202.98:8000", flush=True)
         print("[start_pc] press Ctrl+C to stop", flush=True)
 
         while True:
