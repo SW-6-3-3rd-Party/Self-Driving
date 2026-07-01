@@ -1,6 +1,6 @@
 <div align="center">
 
-# Self-Driving
+# O-ADAS (OTA-based Advanced Driver Assistance System)
 
 ### 센서 융합 기반 RC카 자율주행 통합 제어 시스템
 
