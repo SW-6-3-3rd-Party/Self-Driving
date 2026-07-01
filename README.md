@@ -120,26 +120,8 @@
 - **FRONT (TC375 Front Zone)** - 전방 ToF/초음파 센서 수집, `AEB1` 센서 패킷 송신, `HPSC` 조향 명령 수신, 서보 PWM 제어
 - **REAR (TC375 Rear Zone)** - 구동 모터 및 브레이크 제어, 엔코더 기반 속도 피드백, 후방/측면 초음파 상태 송신
 
-### 전체 아키텍처
-
-```mermaid
-flowchart LR
-    Camera["USB Camera"] --> Middle["MIDDLE<br/>Lane / Person / Side Distance"]
-    SideUS["Side Ultrasonic"] --> Middle
-    Middle -- "MID2 UDP 5005" --> HPVC["HPVC<br/>LKAS / LCA / AEB / ACC"]
-
-    FrontSensor["Front ToF / Ultrasonic"] --> Front["FRONT TC375<br/>Sensor + Steering ECU"]
-    Front -- "AEB1 UDP 5011" --> HPVC
-    HPVC -- "HPSC UDP 5100" --> Front
-    Front --> Servo["Steering Servo"]
-
-    RearSensor["Rear / Side Ultrasonic<br/>Encoder"] --> Rear["REAR TC375<br/>Drive + Brake ECU"]
-    Rear -- "Rear Status UDP 5012" --> HPVC
-    HPVC -- "Drive Command UDP 5110" --> Rear
-    Rear --> Motor["DC Motor / Brake"]
-
-    HPVC -- "HPAB UDP 5013 optional" --> Brake["Brake Controller"]
-```
+### 전체 아키텍처  
+<img width="994" height="533" alt="스크린샷 2026-07-01 185417" src="https://github.com/user-attachments/assets/78bb33b7-6fcd-443e-b6e3-59d13fb6516f" />
 
 ### 네트워크 및 프로토콜
 
@@ -230,7 +212,10 @@ buildHpvcDesktopValidationModel(true)
 buildHpvcDeploymentModel(true)
 ```
 
-## 7. 개발 포인트
+## 7. 담당 역할  
+<img width="981" height="418" alt="스크린샷 2026-07-01 185718" src="https://github.com/user-attachments/assets/3b8beb2f-1c9b-42bb-8f38-cf41c1865925" />
+
+## 8. 개발 포인트
 
 - **Zonal Architecture**: FRONT, MIDDLE, HPVC, REAR로 기능을 분리해 실제 차량 E/E 구조와 유사한 제어 흐름 구성
 - **고정 바이너리 프로토콜**: Python, C, MATLAB/Simulink가 공유하는 UDP wire contract 정의
@@ -239,20 +224,20 @@ buildHpvcDeploymentModel(true)
 - **실차/벤치 겸용 구조**: 실제 카메라·초음파 센서뿐 아니라 synthetic camera, mock ultrasonic, virtual LKAS curve로 통합 검증 가능
 - **계약 기반 검증**: CRC32, Sequence, payload layout을 Python/MATLAB 테스트로 반복 검증
 
-## 8. 기술 스택
+## 9. 기술 스택
 
 | Hardware | Software | Tools |
 | --- | --- | --- |
 | Infineon **TC375**<br />**Raspberry Pi**<br />USB Camera<br />ToF Sensor<br />Ultrasonic Sensor<br />Servo Motor<br />DC Motor / Encoder<br />Ethernet Switch | **Embedded C**<br />**Python 3**<br />**MATLAB / Simulink**<br />**OpenCV**<br />**Ultralytics YOLO**<br />**Flask**<br />**lwIP**<br />**UDP / CRC32** | **AURIX Development Studio**<br />**VS Code**<br />**GitHub**<br />**MATLAB / Simulink**<br />**Raspberry Pi Blockset**<br />**Python unittest** |
 
-## 9. 프로젝트 의의
+## 10. 프로젝트 의의
 
 Self-Driving은 단일 기능 데모가 아니라,  
 **인지 ECU → HPVC 판단 → Front/Rear 제어기 → 액추에이터 구동 → 상태 피드백**으로 이어지는 전체 자율주행 제어 흐름을 구성한 프로젝트입니다.
 
 특히 카메라 인식, 거리 센서, UDP 통신, Simulink 제어 모델, TC375 액추에이터 제어를 하나의 RC카 플랫폼 안에서 연결하며 임베디드 자율주행 시스템의 데이터 흐름과 fail-safe 구조를 직접 구현했다는 점에 의미가 있습니다.
 
-## 10. 개선 방향
+## 11. 개선 방향
 
 - 실제 주행 환경에서 차선 인식 파라미터와 카메라 보정값 추가 튜닝
 - AEB 판단에 차량 속도, 제동 거리, TTC 기반 위험도 계산 추가
